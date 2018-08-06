@@ -50,9 +50,11 @@ Usage
 =====
 
 ```bash
-sclient <remote> <local> [-k | --insecure]
+sclient [flags] <remote> <local>
 ```
 
+* flags
+  * -k, --insecure ignore invalid TLS (SSL/HTTPS) certificates
 * remote
   * must have servername (i.e. example.com)
   * port is optional (default is 443)
@@ -78,5 +80,5 @@ sclient telebit.cloud:443 localhost:3000
 Ignore a bad TLS/SSL/HTTPS certificate and connect anyway.
 
 ```bash
-sclient badtls.telebit.cloud:443 localhost:3000 -k
+sclient -k badtls.telebit.cloud:443 localhost:3000
 ```
