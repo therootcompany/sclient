@@ -36,7 +36,8 @@ For the moment you'll have to install go and compile `sclient` yourself:
 * <https://golang.org/doc/install#install>
 
 ```bash
-git clone
+git clone https://git.coolaj86.com/coolaj86/sclient.go.git
+pushd sclient.go
 go build sclient*.go
 rsync -av sclient-cli /usr/local/bin/sclient
 ```
