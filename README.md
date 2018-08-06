@@ -9,7 +9,7 @@ Unwrap a TLS connection:
 
 ```bash
 $ sclient whatever.com:443 localhost:3000
-> [listening] telebit.cloud:443 <= localhost:3000
+> [listening] whatever.com:443 <= localhost:3000
 ```
 
 Connect via Telnet
@@ -22,6 +22,12 @@ Connect via netcat (nc)
 
 ```bash
 $ nc localhost 3000
+```
+
+cURL
+
+```bash
+$ curl http://localhost:3000 -H 'Host: whatever.com'
 ```
 
 A poor man's (or Windows user's) makeshift replacement for `openssl s_client`, `stunnel`, or `socat`.
