@@ -38,8 +38,8 @@ For the moment you'll have to install go and compile `sclient` yourself:
 ```bash
 git clone https://git.coolaj86.com/coolaj86/sclient.go.git
 pushd sclient.go
-go build sclient*.go
-rsync -av sclient-cli /usr/local/bin/sclient
+go build -o dist/sclient sclient*.go
+rsync -av dist/sclient /usr/local/bin/sclient
 ```
 
 ```bash
