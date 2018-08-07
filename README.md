@@ -35,7 +35,15 @@ A poor man's (or Windows user's) makeshift replacement for `openssl s_client`, `
 Install
 =======
 
-### macOS, Linux, Windows
+### Downloads
+
+* [Windows 10](https://telebit.cloud/sclient/dist/windows/amd64/sclient.exe)
+* [Mac OS X](https://telebit.cloud/sclient/dist/darwin/amd64/sclient)
+* [Linux (x64)](https://telebit.cloud/sclient/dist/linux/amd64/sclient)
+* [Raspberry Pi (armv7)](https://telebit.cloud/sclient/dist/linux/armv7/sclient)
+* more downloads <https://telebit.cloud/sclient/>
+
+### Build from sourc
 
 For the moment you'll have to install go and compile `sclient` yourself:
 
