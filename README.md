@@ -43,7 +43,7 @@ Install
 * [Raspberry Pi (armv7)](https://telebit.cloud/sclient/dist/linux/armv7/sclient)
 * more downloads <https://telebit.cloud/sclient/>
 
-### Build from sourc
+### Build from source
 
 For the moment you'll have to install go and compile `sclient` yourself:
 
