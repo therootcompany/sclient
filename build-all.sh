@@ -11,7 +11,7 @@ GOOS=windows GOARCH=386 go build -o dist/windows/386/sclient.exe sclient*.go
 
 echo ""
 echo "Darwin (macOS) amd64"
-GOOS=darwin GOARCH=amd64 go build -o dist/darwin/sclient sclient*.go
+GOOS=darwin GOARCH=amd64 go build -o dist/darwin/amd64/sclient sclient*.go
 
 echo ""
 echo "Linux amd64"
