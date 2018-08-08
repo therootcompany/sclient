@@ -25,12 +25,18 @@ func main() {
 	insecure := flag.Bool("k", false, "ignore bad TLS/SSL/HTTPS certificates")
 	flag.BoolVar(insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
 	flag.Parse()
+	remotestr := flag.Arg(0)
+	localstr := flag.Arg(1)
 
-	// NArg, Arg, Args
 	i := flag.NArg()
 	if 2 != i {
-		usage()
-		os.Exit(0)
+		// We may omit the second argument if we're going straight to stdin
+		if stat, _ := os.Stdin.Stat(); 1 == i && (stat.Mode()&os.ModeCharDevice) == 0 {
+			localstr = "|"
+		} else {
+			usage()
+			os.Exit(1)
+		}
 	}
 
 	opts := &SclientOpts{}
@@ -38,8 +44,8 @@ func main() {
 	opts.LocalAddress = "localhost"
 	opts.InsecureSkipVerify = *insecure
 
-	remote := strings.Split(flag.Arg(0), ":")
-	//remoteAddr, remotePort, err := net.SplitHostPort(flag.Arg(0))
+	remote := strings.Split(remotestr, ":")
+	//remoteAddr, remotePort, err := net.SplitHostPort(remotestr)
 	if 2 == len(remote) {
 		rport, err := strconv.Atoi(remote[1])
 		if nil != err {
@@ -53,30 +59,37 @@ func main() {
 	}
 	opts.RemoteAddress = remote[0]
 
-	local := strings.Split(flag.Arg(1), ":")
-	//localAddr, localPort, err := net.SplitHostPort(flag.Arg(0))
-
-	if 1 == len(local) {
-		lport, err := strconv.Atoi(local[0])
-		if nil != err {
-			usage()
-			os.Exit(0)
-		}
-		opts.LocalPort = lport
+	if "-" == localstr || "|" == localstr {
+		// User may specify stdin/stdout instead of net
+		opts.LocalAddress = localstr
+		opts.LocalPort = -1
 	} else {
-		lport, err := strconv.Atoi(local[1])
-		if nil != err {
-			usage()
-			os.Exit(0)
+		// Test that argument is a local address
+		local := strings.Split(localstr, ":")
+
+		if 1 == len(local) {
+			lport, err := strconv.Atoi(local[0])
+			if nil != err {
+				usage()
+				os.Exit(0)
+			}
+			opts.LocalPort = lport
+		} else {
+			lport, err := strconv.Atoi(local[1])
+			if nil != err {
+				usage()
+				os.Exit(0)
+			}
+			opts.LocalAddress = local[0]
+			opts.LocalPort = lport
 		}
-		opts.LocalAddress = local[0]
-		opts.LocalPort = lport
 	}
 
 	sclient := &Sclient{}
 	err := sclient.DialAndListen(opts)
 	if nil != err {
-		usage()
-		os.Exit(0)
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		//usage()
+		//os.Exit(6)
 	}
 }

@@ -96,3 +96,19 @@ Ignore a bad TLS/SSL/HTTPS certificate and connect anyway.
 ```bash
 sclient -k badtls.telebit.cloud:443 localhost:3000
 ```
+
+Reading from stdin
+
+```bash
+sclient telebit.cloud:443 -
+```
+
+```bash
+sclient telebit.cloud:443 - </path/to/file
+```
+
+Piping
+
+```bash
+printf "GET / HTTP/1.1\r\nHost: telebit.cloud\r\n\r\n" | sclient telebit.cloud:443
+```
