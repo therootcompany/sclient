@@ -6,10 +6,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	sclient "git.coolaj86.com/sclient.go"
 )
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "\nusage: go run sclient*.go <remote> <local>\n"+
+	fmt.Fprintf(os.Stderr, "\nusage: sclient <remote> <local>\n"+
 		"\n"+
 		"   ex: sclient example.com 3000\n"+
 		"      (sclient example.com:443 localhost:3000)\n"+
@@ -39,7 +41,7 @@ func main() {
 		}
 	}
 
-	opts := &SclientOpts{}
+	opts := &sclient.PipeOpts{}
 	opts.RemotePort = 443
 	opts.LocalAddress = "localhost"
 	opts.InsecureSkipVerify = *insecure
@@ -85,7 +87,7 @@ func main() {
 		}
 	}
 
-	sclient := &Sclient{}
+	sclient := &sclient.Tun{}
 	err := sclient.DialAndListen(opts)
 	if nil != err {
 		fmt.Fprintf(os.Stderr, "%s\n", err)

@@ -52,12 +52,12 @@ For the moment you'll have to install go and compile `sclient` yourself:
 ```bash
 git clone https://git.coolaj86.com/coolaj86/sclient.go.git
 pushd sclient.go
-go build -o dist/sclient sclient*.go
+go build -o dist/sclient cmd/sclient/main.go
 rsync -av dist/sclient /usr/local/bin/sclient
 ```
 
 ```bash
-go run sclient*.go example.com:443 localhost:3000
+go run cmd/sclient/main.go example.com:443 localhost:3000
 ```
 
 Usage

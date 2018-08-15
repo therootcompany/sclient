@@ -1,4 +1,4 @@
-package main
+package sclient
 
 import (
 	"crypto/tls"
@@ -40,7 +40,7 @@ type Rwc interface {
 	RemoteAddr() net.Addr
 }
 
-type SclientOpts struct {
+type PipeOpts struct {
 	RemoteAddress      string
 	RemotePort         int
 	LocalAddress       string
@@ -48,7 +48,7 @@ type SclientOpts struct {
 	InsecureSkipVerify bool
 }
 
-type Sclient struct{}
+type Tun struct{}
 
 func pipe(r Rwc, w Rwc, t string) {
 	buffer := make([]byte, 2048)
@@ -86,7 +86,7 @@ func pipe(r Rwc, w Rwc, t string) {
 	}
 }
 
-func handleConnection(remote string, conn Rwc, opts *SclientOpts) {
+func handleConnection(remote string, conn Rwc, opts *PipeOpts) {
 	sclient, err := tls.Dial("tcp", remote,
 		&tls.Config{InsecureSkipVerify: opts.InsecureSkipVerify})
 
@@ -108,7 +108,7 @@ func handleConnection(remote string, conn Rwc, opts *SclientOpts) {
 	pipe(sclient, conn, "remote")
 }
 
-func (*Sclient) DialAndListen(opts *SclientOpts) error {
+func (*Tun) DialAndListen(opts *PipeOpts) error {
 	remote := opts.RemoteAddress + ":" + strconv.Itoa(opts.RemotePort)
 	conn, err := tls.Dial("tcp", remote,
 		&tls.Config{InsecureSkipVerify: opts.InsecureSkipVerify})
