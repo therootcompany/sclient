@@ -46,6 +46,7 @@ type PipeOpts struct {
 	LocalAddress       string
 	LocalPort          int
 	InsecureSkipVerify bool
+	ServerName         string
 }
 
 type Tun struct{}
@@ -88,7 +89,10 @@ func pipe(r Rwc, w Rwc, t string) {
 
 func handleConnection(remote string, conn Rwc, opts *PipeOpts) {
 	sclient, err := tls.Dial("tcp", remote,
-		&tls.Config{InsecureSkipVerify: opts.InsecureSkipVerify})
+		&tls.Config{
+			ServerName:         opts.ServerName,
+			InsecureSkipVerify: opts.InsecureSkipVerify,
+		})
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
@@ -111,7 +115,10 @@ func handleConnection(remote string, conn Rwc, opts *PipeOpts) {
 func (*Tun) DialAndListen(opts *PipeOpts) error {
 	remote := opts.RemoteAddress + ":" + strconv.Itoa(opts.RemotePort)
 	conn, err := tls.Dial("tcp", remote,
-		&tls.Config{InsecureSkipVerify: opts.InsecureSkipVerify})
+		&tls.Config{
+			ServerName:         opts.ServerName,
+			InsecureSkipVerify: opts.InsecureSkipVerify,
+		})
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)

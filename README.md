@@ -69,6 +69,7 @@ sclient [flags] <remote> <local>
 
 * flags
   * -k, --insecure ignore invalid TLS (SSL/HTTPS) certificates
+  * --servername <string> spoof SNI (to disable use IP as &lt;remote&gt; and do not use this option)
 * remote
   * must have servername (i.e. example.com)
   * port is optional (default is 443)
@@ -111,4 +112,14 @@ Piping
 
 ```bash
 printf "GET / HTTP/1.1\r\nHost: telebit.cloud\r\n\r\n" | sclient telebit.cloud:443
+```
+
+Testing for security vulnerabilities on the remote:
+
+```bash
+sclient -servername "Robert'); DROP TABLE Students;" example.com localhost:3000
+```
+
+```bash
+sclient -servername "../../../.hidden/private.txt" example.com localhost:3000
 ```

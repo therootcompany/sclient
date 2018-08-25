@@ -25,6 +25,7 @@ func usage() {
 func main() {
 	flag.Usage = usage
 	insecure := flag.Bool("k", false, "ignore bad TLS/SSL/HTTPS certificates")
+	servername := flag.String("servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do use this option)")
 	flag.BoolVar(insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
 	flag.Parse()
 	remotestr := flag.Arg(0)
@@ -41,10 +42,12 @@ func main() {
 		}
 	}
 
-	opts := &sclient.PipeOpts{}
-	opts.RemotePort = 443
-	opts.LocalAddress = "localhost"
-	opts.InsecureSkipVerify = *insecure
+	opts := &sclient.PipeOpts{
+		RemotePort:         443,
+		LocalAddress:       "localhost",
+		InsecureSkipVerify: *insecure,
+		ServerName:         *servername,
+	}
 
 	remote := strings.Split(remotestr, ":")
 	//remoteAddr, remotePort, err := net.SplitHostPort(remotestr)
