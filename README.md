@@ -117,9 +117,9 @@ printf "GET / HTTP/1.1\r\nHost: telebit.cloud\r\n\r\n" | sclient telebit.cloud:4
 Testing for security vulnerabilities on the remote:
 
 ```bash
-sclient -servername "Robert'); DROP TABLE Students;" example.com localhost:3000
+sclient --servername "Robert'); DROP TABLE Students;" -k example.com localhost:3000
 ```
 
 ```bash
-sclient -servername "../../../.hidden/private.txt" example.com localhost:3000
+sclient --servername "../../../.hidden/private.txt" -k example.com localhost:3000
 ```
