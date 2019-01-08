@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	sclient "git.coolaj86.com/sclient.go"
+	sclient "git.coolaj86.com/coolaj86/sclient.go"
 )
 
 func usage() {
