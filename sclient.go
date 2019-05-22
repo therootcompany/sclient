@@ -10,6 +10,66 @@ import (
 	"strings"
 )
 
+// Tunnel specifies which remote encrypted connection to make available as a plain connection locally.
+type Tunnel struct {
+	RemoteAddress      string
+	RemotePort         int
+	LocalAddress       string
+	LocalPort          int
+	InsecureSkipVerify bool
+	ServerName         string
+}
+
+// DialAndListen will create a test TLS connection to the remote address and then
+// begin listening locally. Each local connection will result in a separate remote connection.
+func (t *Tunnel) DialAndListen() error {
+	remote := t.RemoteAddress + ":" + strconv.Itoa(t.RemotePort)
+	conn, err := tls.Dial("tcp", remote,
+		&tls.Config{
+			ServerName:         t.ServerName,
+			InsecureSkipVerify: t.InsecureSkipVerify,
+		})
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
+	} else {
+		conn.Close()
+	}
+
+	// use stdin/stdout
+	if "-" == t.LocalAddress || "|" == t.LocalAddress {
+		var name string
+		network := "stdio"
+		if "|" == t.LocalAddress {
+			name = "pipe"
+		} else {
+			name = "stdin"
+		}
+		conn := &stdnet{os.Stdin, os.Stdout, &stdaddr{net.UnixAddr{name, network}}}
+		t.handleConnection(remote, conn)
+		return nil
+	}
+
+	// use net.Conn
+	local := t.LocalAddress + ":" + strconv.Itoa(t.LocalPort)
+	ln, err := net.Listen("tcp", local)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stdout, "[listening] %s:%d <= %s:%d\n",
+		t.RemoteAddress, t.RemotePort, t.LocalAddress, t.LocalPort)
+
+	for {
+		conn, err := ln.Accept()
+		if nil != err {
+			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
+			continue
+		}
+		go t.handleConnection(remote, conn)
+	}
+}
+
 // I wonder if I can get this to exactly mirror UnixAddr without passing it in
 type stdaddr struct {
 	net.UnixAddr
@@ -38,15 +98,6 @@ func (rw *stdnet) RemoteAddr() net.Addr {
 type netReadWriteCloser interface {
 	io.ReadWriteCloser
 	RemoteAddr() net.Addr
-}
-
-type Tunnel struct {
-	RemoteAddress      string
-	RemotePort         int
-	LocalAddress       string
-	LocalPort          int
-	InsecureSkipVerify bool
-	ServerName         string
 }
 
 func pipe(r netReadWriteCloser, w netReadWriteCloser, t string) {
@@ -108,52 +159,4 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 
 	go pipe(conn, sclient, "local")
 	pipe(sclient, conn, "remote")
-}
-
-func (t *Tunnel) DialAndListen() error {
-	remote := t.RemoteAddress + ":" + strconv.Itoa(t.RemotePort)
-	conn, err := tls.Dial("tcp", remote,
-		&tls.Config{
-			ServerName:         t.ServerName,
-			InsecureSkipVerify: t.InsecureSkipVerify,
-		})
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
-	} else {
-		conn.Close()
-	}
-
-	// use stdin/stdout
-	if "-" == t.LocalAddress || "|" == t.LocalAddress {
-		var name string
-		network := "stdio"
-		if "|" == t.LocalAddress {
-			name = "pipe"
-		} else {
-			name = "stdin"
-		}
-		conn := &stdnet{os.Stdin, os.Stdout, &stdaddr{net.UnixAddr{name, network}}}
-		t.handleConnection(remote, conn)
-		return nil
-	}
-
-	// use net.Conn
-	local := t.LocalAddress + ":" + strconv.Itoa(t.LocalPort)
-	ln, err := net.Listen("tcp", local)
-	if err != nil {
-		return err
-	}
-
-	fmt.Fprintf(os.Stdout, "[listening] %s:%d <= %s:%d\n",
-		t.RemoteAddress, t.RemotePort, t.LocalAddress, t.LocalPort)
-
-	for {
-		conn, err := ln.Accept()
-		if nil != err {
-			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
-			continue
-		}
-		go t.handleConnection(remote, conn)
-	}
 }
