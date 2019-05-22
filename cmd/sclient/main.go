@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	sclient "git.coolaj86.com/coolaj86/sclient.go"
+	sclient "git.rootprojects.org/root/sclient.go"
 )
 
 func usage() {
@@ -42,7 +42,7 @@ func main() {
 		}
 	}
 
-	opts := &sclient.PipeOpts{
+	sclient := &sclient.Tunnel{
 		RemotePort:         443,
 		LocalAddress:       "localhost",
 		InsecureSkipVerify: *insecure,
@@ -57,17 +57,17 @@ func main() {
 			usage()
 			os.Exit(0)
 		}
-		opts.RemotePort = rport
+		sclient.RemotePort = rport
 	} else if 1 != len(remote) {
 		usage()
 		os.Exit(0)
 	}
-	opts.RemoteAddress = remote[0]
+	sclient.RemoteAddress = remote[0]
 
 	if "-" == localstr || "|" == localstr {
 		// User may specify stdin/stdout instead of net
-		opts.LocalAddress = localstr
-		opts.LocalPort = -1
+		sclient.LocalAddress = localstr
+		sclient.LocalPort = -1
 	} else {
 		// Test that argument is a local address
 		local := strings.Split(localstr, ":")
@@ -78,20 +78,19 @@ func main() {
 				usage()
 				os.Exit(0)
 			}
-			opts.LocalPort = lport
+			sclient.LocalPort = lport
 		} else {
 			lport, err := strconv.Atoi(local[1])
 			if nil != err {
 				usage()
 				os.Exit(0)
 			}
-			opts.LocalAddress = local[0]
-			opts.LocalPort = lport
+			sclient.LocalAddress = local[0]
+			sclient.LocalPort = lport
 		}
 	}
 
-	sclient := &sclient.Tun{}
-	err := sclient.DialAndListen(opts)
+	err := sclient.DialAndListen()
 	if nil != err {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		//usage()

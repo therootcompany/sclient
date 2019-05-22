@@ -50,14 +50,18 @@ For the moment you'll have to install go and compile `sclient` yourself:
 * <https://golang.org/doc/install#install>
 
 ```bash
-git clone https://git.coolaj86.com/coolaj86/sclient.go.git
+git clone https://git.rootprojects.org/root/sclient.go.git
 pushd sclient.go
 go build -o dist/sclient cmd/sclient/main.go
 rsync -av dist/sclient /usr/local/bin/sclient
+sclient example.com:443 localhost:3000
 ```
 
+Or
+
 ```bash
-go run cmd/sclient/main.go example.com:443 localhost:3000
+go get git.rootprojects.org/root/sclient.go/cmd/sclient
+go run git.rootprojects.org/root/sclient.go/cmd/sclient example.com:443 localhost:3000
 ```
 
 Usage

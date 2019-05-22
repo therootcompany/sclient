@@ -1,1 +1,3 @@
-module git.coolaj86.com/coolaj86/sclient.go
+module git.rootprojects.org/root/sclient.go
+
+go 1.12

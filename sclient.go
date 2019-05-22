@@ -35,12 +35,12 @@ func (rw *stdnet) RemoteAddr() net.Addr {
 }
 
 // not all of net.Conn, just RWC and RemoteAddr()
-type Rwc interface {
+type netReadWriteCloser interface {
 	io.ReadWriteCloser
 	RemoteAddr() net.Addr
 }
 
-type PipeOpts struct {
+type Tunnel struct {
 	RemoteAddress      string
 	RemotePort         int
 	LocalAddress       string
@@ -49,9 +49,7 @@ type PipeOpts struct {
 	ServerName         string
 }
 
-type Tun struct{}
-
-func pipe(r Rwc, w Rwc, t string) {
+func pipe(r netReadWriteCloser, w netReadWriteCloser, t string) {
 	buffer := make([]byte, 2048)
 	for {
 		done := false
@@ -87,11 +85,11 @@ func pipe(r Rwc, w Rwc, t string) {
 	}
 }
 
-func handleConnection(remote string, conn Rwc, opts *PipeOpts) {
+func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 	sclient, err := tls.Dial("tcp", remote,
 		&tls.Config{
-			ServerName:         opts.ServerName,
-			InsecureSkipVerify: opts.InsecureSkipVerify,
+			ServerName:         t.ServerName,
+			InsecureSkipVerify: t.InsecureSkipVerify,
 		})
 
 	if err != nil {
@@ -102,22 +100,22 @@ func handleConnection(remote string, conn Rwc, opts *PipeOpts) {
 
 	if "stdio" == conn.RemoteAddr().Network() {
 		fmt.Fprintf(os.Stdout, "(connected to %s:%d and reading from %s)\n",
-			opts.RemoteAddress, opts.RemotePort, conn.RemoteAddr().String())
+			t.RemoteAddress, t.RemotePort, conn.RemoteAddr().String())
 	} else {
 		fmt.Fprintf(os.Stdout, "[connect] %s => %s:%d\n",
-			strings.Replace(conn.RemoteAddr().String(), "[::1]:", "localhost:", 1), opts.RemoteAddress, opts.RemotePort)
+			strings.Replace(conn.RemoteAddr().String(), "[::1]:", "localhost:", 1), t.RemoteAddress, t.RemotePort)
 	}
 
 	go pipe(conn, sclient, "local")
 	pipe(sclient, conn, "remote")
 }
 
-func (*Tun) DialAndListen(opts *PipeOpts) error {
-	remote := opts.RemoteAddress + ":" + strconv.Itoa(opts.RemotePort)
+func (t *Tunnel) DialAndListen() error {
+	remote := t.RemoteAddress + ":" + strconv.Itoa(t.RemotePort)
 	conn, err := tls.Dial("tcp", remote,
 		&tls.Config{
-			ServerName:         opts.ServerName,
-			InsecureSkipVerify: opts.InsecureSkipVerify,
+			ServerName:         t.ServerName,
+			InsecureSkipVerify: t.InsecureSkipVerify,
 		})
 
 	if err != nil {
@@ -127,28 +125,28 @@ func (*Tun) DialAndListen(opts *PipeOpts) error {
 	}
 
 	// use stdin/stdout
-	if "-" == opts.LocalAddress || "|" == opts.LocalAddress {
+	if "-" == t.LocalAddress || "|" == t.LocalAddress {
 		var name string
 		network := "stdio"
-		if "|" == opts.LocalAddress {
+		if "|" == t.LocalAddress {
 			name = "pipe"
 		} else {
 			name = "stdin"
 		}
 		conn := &stdnet{os.Stdin, os.Stdout, &stdaddr{net.UnixAddr{name, network}}}
-		handleConnection(remote, conn, opts)
+		t.handleConnection(remote, conn)
 		return nil
 	}
 
 	// use net.Conn
-	local := opts.LocalAddress + ":" + strconv.Itoa(opts.LocalPort)
+	local := t.LocalAddress + ":" + strconv.Itoa(t.LocalPort)
 	ln, err := net.Listen("tcp", local)
 	if err != nil {
 		return err
 	}
 
 	fmt.Fprintf(os.Stdout, "[listening] %s:%d <= %s:%d\n",
-		opts.RemoteAddress, opts.RemotePort, opts.LocalAddress, opts.LocalPort)
+		t.RemoteAddress, t.RemotePort, t.LocalAddress, t.LocalPort)
 
 	for {
 		conn, err := ln.Accept()
@@ -156,6 +154,6 @@ func (*Tun) DialAndListen(opts *PipeOpts) error {
 			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
 			continue
 		}
-		go handleConnection(remote, conn, opts)
+		go t.handleConnection(remote, conn)
 	}
 }
