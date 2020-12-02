@@ -10,19 +10,41 @@ import (
 	sclient "git.rootprojects.org/root/sclient.go"
 )
 
+var (
+	// commit refers to the abbreviated commit hash
+	commit = "0000000"
+	// version refers to the most recent tag, plus any commits made since then
+	version = "v0.0.0-pre0+0000000"
+	// GitTimestamp refers to the timestamp of the most recent commit
+	date = "0000-00-00T00:00:00+0000"
+)
+
+func ver() string {
+	return fmt.Sprintf("sclient %s (%s) %s", version, commit[:7], date)
+}
+
 func usage() {
-	fmt.Fprintf(os.Stderr, "\nusage: sclient <remote> <local>\n"+
+	fmt.Fprintf(os.Stderr, "\nsclient %s\n"+
+		"\nusage: sclient <remote> <local>\n"+
 		"\n"+
 		"   ex: sclient example.com 3000\n"+
 		"      (sclient example.com:443 localhost:3000)\n"+
 		"\n"+
 		"   ex: sclient example.com:8443 0.0.0.0:4080\n"+
-		"\n")
+		"\n", ver())
 	flag.PrintDefaults()
 	fmt.Println()
 }
 
 func main() {
+	if len(os.Args) >= 2 {
+		if "version" == strings.TrimLeft(os.Args[1], "-") {
+			fmt.Printf("%s\n", ver())
+			os.Exit(0)
+			return
+		}
+	}
+
 	flag.Usage = usage
 	insecure := flag.Bool("k", false, "ignore bad TLS/SSL/HTTPS certificates")
 	servername := flag.String("servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do use this option)")
