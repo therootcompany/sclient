@@ -47,8 +47,10 @@ func main() {
 
 	flag.Usage = usage
 	insecure := flag.Bool("k", false, "ignore bad TLS/SSL/HTTPS certificates")
+	quiet := flag.Bool("q", false, "don't output connection established messages")
 	servername := flag.String("servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do use this option)")
 	flag.BoolVar(insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
+	flag.BoolVar(quiet, "quiet", false, "don't output connection established messages")
 	flag.Parse()
 	remotestr := flag.Arg(0)
 	localstr := flag.Arg(1)
@@ -69,6 +71,7 @@ func main() {
 		LocalAddress:       "localhost",
 		InsecureSkipVerify: *insecure,
 		ServerName:         *servername,
+		Quiet:              *quiet,
 	}
 
 	remote := strings.Split(remotestr, ":")

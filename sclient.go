@@ -18,6 +18,7 @@ type Tunnel struct {
 	LocalPort          int
 	InsecureSkipVerify bool
 	ServerName         string
+	Quiet              bool
 }
 
 // DialAndListen will create a test TLS connection to the remote address and then
@@ -150,8 +151,10 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 	}
 
 	if "stdio" == conn.RemoteAddr().Network() {
-		fmt.Fprintf(os.Stdout, "(connected to %s:%d and reading from %s)\n",
-			t.RemoteAddress, t.RemotePort, conn.RemoteAddr().String())
+		if t.Quiet == false {
+			fmt.Fprintf(os.Stdout, "(connected to %s:%d and reading from %s)\n",
+				t.RemoteAddress, t.RemotePort, conn.RemoteAddr().String())
+		}
 	} else {
 		fmt.Fprintf(os.Stdout, "[connect] %s => %s:%d\n",
 			strings.Replace(conn.RemoteAddr().String(), "[::1]:", "localhost:", 1), t.RemoteAddress, t.RemotePort)
