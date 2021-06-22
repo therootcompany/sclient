@@ -24,13 +24,15 @@ func ver() string {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "\nsclient %s\n"+
+	fmt.Fprintf(os.Stderr, "\n%s\n"+
 		"\nusage: sclient <remote> <local>\n"+
 		"\n"+
 		"   ex: sclient example.com 3000\n"+
 		"      (sclient example.com:443 localhost:3000)\n"+
 		"\n"+
 		"   ex: sclient example.com:8443 0.0.0.0:4080\n"+
+		"\n"+
+		"   ex: sclient example.com:443 -\n"+
 		"\n", ver())
 	flag.PrintDefaults()
 	fmt.Println()
@@ -46,7 +48,7 @@ func main() {
 	}
 
 	flag.Usage = usage
-	insecure := flag.Bool("k", false, "ignore bad TLS/SSL/HTTPS certificates")
+	insecure := flag.Bool("k", false, "alias for --insecure")
 	silent := flag.Bool("s", false, "alias of --silent")
 	servername := flag.String("servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do use this option)")
 	flag.BoolVar(insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")

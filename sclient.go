@@ -58,8 +58,10 @@ func (t *Tunnel) DialAndListen() error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stdout, "[listening] %s:%d <= %s:%d\n",
-		t.RemoteAddress, t.RemotePort, t.LocalAddress, t.LocalPort)
+	if !t.Silent {
+		fmt.Fprintf(os.Stdout, "[listening] %s:%d <= %s:%d\n",
+			t.RemoteAddress, t.RemotePort, t.LocalAddress, t.LocalPort)
+	}
 
 	for {
 		conn, err := ln.Accept()
@@ -150,14 +152,14 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 		return
 	}
 
-	if "stdio" == conn.RemoteAddr().Network() {
-		if !t.Silent {
+	if !t.Silent {
+		if "stdio" == conn.RemoteAddr().Network() {
 			fmt.Fprintf(os.Stdout, "(connected to %s:%d and reading from %s)\n",
 				t.RemoteAddress, t.RemotePort, conn.RemoteAddr().String())
+		} else {
+			fmt.Fprintf(os.Stdout, "[connect] %s => %s:%d\n",
+				strings.Replace(conn.RemoteAddr().String(), "[::1]:", "localhost:", 1), t.RemoteAddress, t.RemotePort)
 		}
-	} else {
-		fmt.Fprintf(os.Stdout, "[connect] %s => %s:%d\n",
-			strings.Replace(conn.RemoteAddr().String(), "[::1]:", "localhost:", 1), t.RemoteAddress, t.RemotePort)
 	}
 
 	go pipe(conn, sclient, "local")
