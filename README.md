@@ -127,6 +127,10 @@ sclient --servername "Robert'); DROP TABLE Students;" -k example.com localhost:3
 sclient --servername "../../../.hidden/private.txt" -k example.com localhost:3000
 ```
 
+# API
+
+See [Go Docs](https://pkg.go.dev/github.com/therootcompany/sclient).
+
 # Build from source
 
 You'll need to install [Go](https://golang.org). See
