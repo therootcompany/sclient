@@ -1,6 +1,7 @@
 # sclient
 
-Secure Client for exposing TLS (aka SSL) secured services as plain-text connections locally.
+Secure Client for exposing TLS (aka SSL) secured services as plain-text
+connections locally.
 
 Also ideal for multiplexing a single port with multiple protocols using SNI.
 
@@ -30,7 +31,8 @@ cURL
 curl http://localhost:3000 -H 'Host: whatever.com'
 ```
 
-A poor man's (or Windows user's) makeshift replacement for `openssl s_client`, `stunnel`, or `socat`.
+A poor man's (or Windows user's) makeshift replacement for `openssl s_client`,
+`stunnel`, or `socat`.
 
 # Table of Contents
 
@@ -53,9 +55,11 @@ curl.exe -A MS https://webinstall.dev/sclient | powershell
 
 ### Downloads
 
-Check the [Github Releases](https://github.com/therootcompany/sclient/releases) for
+Check the [Github Releases](https://github.com/therootcompany/sclient/releases)
+for
 
-- macOS (x64) Apple Silicon [coming soon](https://github.com/golang/go/issues/39782)
+- macOS (x64) Apple Silicon
+  [coming soon](https://github.com/golang/go/issues/39782)
 - Linux (x64, i386, arm64, arm6, arm7)
 - Windows 10 (x64, i386)
 
@@ -66,8 +70,10 @@ sclient [flags] <remote> <local>
 ```
 
 - flags
+  - -s, --silent less verbose logging
   - -k, --insecure ignore invalid TLS (SSL/HTTPS) certificates
-  - --servername <string> spoof SNI (to disable use IP as &lt;remote&gt; and do not use this option)
+  - --servername <string> spoof SNI (to disable use IP as &lt;remote&gt; and do
+    not use this option)
 - remote
   - must have servername (i.e. example.com)
   - port is optional (default is 443)
@@ -123,8 +129,8 @@ sclient --servername "../../../.hidden/private.txt" -k example.com localhost:300
 
 # Build from source
 
-You'll need to install [Go](https://golang.org).
-See [webinstall.dev/golang](https://webinstall.dev/golang) for install instructions.
+You'll need to install [Go](https://golang.org). See
+[webinstall.dev/golang](https://webinstall.dev/golang) for install instructions.
 
 ```bash
 curl -sS https://webinstall.dev/golang | bash
