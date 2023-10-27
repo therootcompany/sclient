@@ -7,21 +7,30 @@ builds:
     env:
       - CGO_ENABLED=0
     goos:
-      - linux
-      - windows
       - darwin
+      - linux
+      - freebsd
+      - windows
+      - js
     goarch:
-      - 386
       - amd64
       - arm
       - arm64
+      - wasm
     goarm:
-      - 6
       - 7
+    goamd64:
+      - v2
+    ignore:
+      - goos: windows
+        goarch: 386
+      - goos: windows
+        goarm: 6
+      - goos: windows
+        goarm: 7
 archives:
-  - replacements:
-      386: i386
-      amd64: x86_64
+  - id: sclient-binary
+    format: tar.xz
     format_overrides:
       - goos: windows
         format: zip
