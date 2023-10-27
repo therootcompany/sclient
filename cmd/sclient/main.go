@@ -50,7 +50,7 @@ func main() {
 	flag.Usage = usage
 	insecure := flag.Bool("k", false, "alias for --insecure")
 	silent := flag.Bool("s", false, "alias of --silent")
-	servername := flag.String("servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do use this option)")
+	servername := flag.String("servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
 	flag.BoolVar(insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
 	flag.BoolVar(silent, "silent", false, "less verbose output")
 	flag.Parse()
