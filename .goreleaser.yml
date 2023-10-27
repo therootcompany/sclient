@@ -3,7 +3,7 @@ before:
     - go mod download
     - go generate ./...
 builds:
-  - main: ./cmd/sclient/main.go
+  - main: ./cmd/sclient/
     env:
       - CGO_ENABLED=0
     goos:

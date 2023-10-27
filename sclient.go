@@ -17,6 +17,7 @@ type Tunnel struct {
 	LocalAddress       string
 	LocalPort          int
 	InsecureSkipVerify bool
+	NextProtos         []string
 	ServerName         string
 	Silent             bool
 }
@@ -29,6 +30,7 @@ func (t *Tunnel) DialAndListen() error {
 		&tls.Config{
 			ServerName:         t.ServerName,
 			InsecureSkipVerify: t.InsecureSkipVerify,
+			NextProtos:         t.NextProtos,
 		})
 
 	if err != nil {

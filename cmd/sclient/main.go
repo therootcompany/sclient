@@ -40,20 +40,30 @@ func usage() {
 
 func main() {
 	if len(os.Args) >= 2 {
-		if "version" == strings.TrimLeft(os.Args[1], "-") {
+		if os.Args[1] == "-V" || strings.TrimLeft(os.Args[1], "-") == "version" {
 			fmt.Printf("%s\n", ver())
 			os.Exit(0)
 			return
 		}
 	}
 
+	var alpnList string
+	var insecure bool
+	var servername string
+	var silent bool
+
 	flag.Usage = usage
-	insecure := flag.Bool("k", false, "alias for --insecure")
-	silent := flag.Bool("s", false, "alias of --silent")
-	servername := flag.String("servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
-	flag.BoolVar(insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
-	flag.BoolVar(silent, "silent", false, "less verbose output")
+
+	flag.StringVar(&alpnList, "alpn", "", "acceptable protocols, ex: 'h2,http/1.1' 'http/1.1' 'ssh'")
+	flag.BoolVar(&insecure, "k", false, "alias for --insecure")
+	flag.BoolVar(&silent, "s", false, "alias of --silent")
+	flag.StringVar(&servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
+	flag.BoolVar(&insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
+	flag.BoolVar(&silent, "silent", false, "less verbose output")
+
 	flag.Parse()
+
+	alpns := parseOptionList(alpnList)
 	remotestr := flag.Arg(0)
 	localstr := flag.Arg(1)
 
@@ -71,9 +81,10 @@ func main() {
 	sclient := &sclient.Tunnel{
 		RemotePort:         443,
 		LocalAddress:       "localhost",
-		InsecureSkipVerify: *insecure,
-		ServerName:         *servername,
-		Silent:             *silent,
+		InsecureSkipVerify: insecure,
+		ServerName:         servername,
+		Silent:             silent,
+		NextProtos:         alpns,
 	}
 
 	remote := strings.Split(remotestr, ":")
@@ -123,4 +134,19 @@ func main() {
 		//usage()
 		//os.Exit(6)
 	}
+}
+
+// parsers "a,b,c" "a b c" and "a, b, c" all the same
+func parseOptionList(optionList string) []string {
+	optionList = strings.TrimSpace(optionList)
+
+	if len(optionList) == 0 {
+		return nil
+	}
+
+	options := []string{}
+	optionList = strings.ReplaceAll(optionList, ",", " ")
+	options = strings.Fields(optionList)
+
+	return options
 }
