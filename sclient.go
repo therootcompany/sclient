@@ -29,8 +29,8 @@ func (t *Tunnel) DialAndListen() error {
 	conn, err := tls.Dial("tcp", remote,
 		&tls.Config{
 			ServerName:         t.ServerName,
-			InsecureSkipVerify: t.InsecureSkipVerify,
 			NextProtos:         t.NextProtos,
+			InsecureSkipVerify: t.InsecureSkipVerify,
 		})
 
 	if err != nil {
@@ -145,6 +145,7 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 	sclient, err := tls.Dial("tcp", remote,
 		&tls.Config{
 			ServerName:         t.ServerName,
+			NextProtos:         t.NextProtos,
 			InsecureSkipVerify: t.InsecureSkipVerify,
 		})
 
