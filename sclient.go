@@ -36,14 +36,14 @@ func (t *Tunnel) DialAndListen() error {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
 	} else {
-		conn.Close()
+		_ = conn.Close()
 	}
 
 	// use stdin/stdout
-	if "-" == t.LocalAddress || "|" == t.LocalAddress {
+	if t.LocalAddress == "-" || t.LocalAddress == "|" {
 		var name string
 		network := "stdio"
-		if "|" == t.LocalAddress {
+		if t.LocalAddress == "|" {
 			name = "pipe"
 		} else {
 			name = "stdin"
@@ -61,7 +61,7 @@ func (t *Tunnel) DialAndListen() error {
 	}
 
 	if !t.Silent {
-		fmt.Fprintf(os.Stdout, "[listening] %s:%d <= %s:%d\n",
+		_, _ = fmt.Fprintf(os.Stdout, "[listening] %s:%d <= %s:%d\n",
 			t.RemoteAddress, t.RemotePort, t.LocalAddress, t.LocalPort)
 	}
 
@@ -117,11 +117,11 @@ func pipe(r netReadWriteCloser, w netReadWriteCloser, t string) {
 			if io.EOF != err {
 				fmt.Fprintf(os.Stderr, "[read error] (%s:%d) %s\n", t, count, err)
 			}
-			r.Close()
+			_ = r.Close()
 			//w.Close()
 			done = true
 		}
-		if 0 == count {
+		if count == 0 {
 			break
 		}
 		_, err = w.Write(buffer[:count])
@@ -131,7 +131,7 @@ func pipe(r netReadWriteCloser, w netReadWriteCloser, t string) {
 				fmt.Fprintf(os.Stderr, "[write error] (%s) %s\n", t, err)
 			}
 			// TODO handle error closing?
-			r.Close()
+			_ = r.Close()
 			//w.Close()
 			done = true
 		}
@@ -151,16 +151,16 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 
 	if !t.Silent {
-		if "stdio" == conn.RemoteAddr().Network() {
-			fmt.Fprintf(os.Stdout, "(connected to %s:%d and reading from %s)\n",
+		if conn.RemoteAddr().Network() == "stdio" {
+			_, _ = fmt.Fprintf(os.Stdout, "(connected to %s:%d and reading from %s)\n",
 				t.RemoteAddress, t.RemotePort, conn.RemoteAddr().String())
 		} else {
-			fmt.Fprintf(os.Stdout, "[connect] %s => %s:%d\n",
+			_, _ = fmt.Fprintf(os.Stdout, "[connect] %s => %s:%d\n",
 				strings.Replace(conn.RemoteAddr().String(), "[::1]:", "localhost:", 1), t.RemoteAddress, t.RemotePort)
 		}
 	}

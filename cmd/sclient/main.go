@@ -68,9 +68,9 @@ func main() {
 	localstr := flag.Arg(1)
 
 	i := flag.NArg()
-	if 2 != i {
+	if i != 2 {
 		// We may omit the second argument if we're going straight to stdin
-		if stat, _ := os.Stdin.Stat(); 1 == i && (stat.Mode()&os.ModeCharDevice) == 0 {
+		if stat, _ := os.Stdin.Stat(); i == 1 && (stat.Mode()&os.ModeCharDevice) == 0 {
 			localstr = "|"
 		} else {
 			usage()
@@ -89,20 +89,20 @@ func main() {
 
 	remote := strings.Split(remotestr, ":")
 	//remoteAddr, remotePort, err := net.SplitHostPort(remotestr)
-	if 2 == len(remote) {
+	if len(remote) == 2 {
 		rport, err := strconv.Atoi(remote[1])
 		if nil != err {
 			usage()
 			os.Exit(0)
 		}
 		sclient.RemotePort = rport
-	} else if 1 != len(remote) {
+	} else if len(remote) != 1 {
 		usage()
 		os.Exit(0)
 	}
 	sclient.RemoteAddress = remote[0]
 
-	if "-" == localstr || "|" == localstr {
+	if localstr == "-" || localstr == "|" {
 		// User may specify stdin/stdout instead of net
 		sclient.LocalAddress = localstr
 		sclient.LocalPort = -1
@@ -110,7 +110,7 @@ func main() {
 		// Test that argument is a local address
 		local := strings.Split(localstr, ":")
 
-		if 1 == len(local) {
+		if len(local) == 1 {
 			lport, err := strconv.Atoi(local[0])
 			if nil != err {
 				usage()
@@ -144,9 +144,8 @@ func parseOptionList(optionList string) []string {
 		return nil
 	}
 
-	options := []string{}
 	optionList = strings.ReplaceAll(optionList, ",", " ")
-	options = strings.Fields(optionList)
+	options := strings.Fields(optionList)
 
 	return options
 }
