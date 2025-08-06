@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"os"
@@ -79,12 +80,16 @@ func main() {
 	}
 
 	sclient := &sclient.Tunnel{
-		RemotePort:         443,
-		LocalAddress:       "localhost",
-		InsecureSkipVerify: insecure,
-		ServerName:         servername,
-		Silent:             silent,
-		NextProtos:         alpns,
+		RemotePort:   443,
+		LocalAddress: "localhost",
+		Silent:       silent,
+		GetTLSConfig: func() *tls.Config {
+			return &tls.Config{
+				ServerName:         servername,
+				NextProtos:         alpns,
+				InsecureSkipVerify: insecure,
+			}
+		},
 	}
 
 	remote := strings.Split(remotestr, ":")
