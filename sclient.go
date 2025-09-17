@@ -12,26 +12,19 @@ import (
 
 // Tunnel specifies which remote encrypted connection to make available as a plain connection locally.
 type Tunnel struct {
-	RemoteAddress      string
-	RemotePort         int
-	LocalAddress       string
-	LocalPort          int
-	InsecureSkipVerify bool
-	NextProtos         []string
-	ServerName         string
-	Silent             bool
+	RemoteAddress string
+	RemotePort    int
+	LocalAddress  string
+	LocalPort     int
+	GetTLSConfig  func() *tls.Config
+	Silent        bool
 }
 
 // DialAndListen will create a test TLS connection to the remote address and then
 // begin listening locally. Each local connection will result in a separate remote connection.
 func (t *Tunnel) DialAndListen() error {
 	remote := t.RemoteAddress + ":" + strconv.Itoa(t.RemotePort)
-	conn, err := tls.Dial("tcp", remote,
-		&tls.Config{
-			ServerName:         t.ServerName,
-			NextProtos:         t.NextProtos,
-			InsecureSkipVerify: t.InsecureSkipVerify,
-		})
+	conn, err := tls.Dial("tcp", remote, t.GetTLSConfig())
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
@@ -142,12 +135,7 @@ func pipe(r netReadWriteCloser, w netReadWriteCloser, t string) {
 }
 
 func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
-	sclient, err := tls.Dial("tcp", remote,
-		&tls.Config{
-			ServerName:         t.ServerName,
-			NextProtos:         t.NextProtos,
-			InsecureSkipVerify: t.InsecureSkipVerify,
-		})
+	sclient, err := tls.Dial("tcp", remote, t.GetTLSConfig())
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
