@@ -36,6 +36,10 @@ func usage() {
 		"\n"+
 		"   ex: sclient --ssh 22 example.com 3000\n"+
 		"      (try TLS+ssh ALPN on 443, fall back to SSH on port 22)\n"+
+		"\n"+
+		"   ~/.ssh/config:\n"+
+		"      Host *\n"+
+		"          ProxyCommand sclient --ssh %%p %%h\n"+
 		"\n", ver())
 	flag.PrintDefaults()
 	fmt.Println()
