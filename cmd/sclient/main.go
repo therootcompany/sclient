@@ -33,6 +33,13 @@ func usage() {
 		"   ex: sclient example.com:8443 0.0.0.0:4080\n"+
 		"\n"+
 		"   ex: sclient example.com:443 -\n"+
+		"\n"+
+		"   ex: sclient --ssh 22 example.com 3000\n"+
+		"      (try TLS+ssh ALPN on 443, fall back to SSH on port 22)\n"+
+		"\n"+
+		"   ~/.ssh/config:\n"+
+		"      Host *\n"+
+		"          ProxyCommand sclient --ssh %%p %%h\n"+
 		"\n", ver())
 	flag.PrintDefaults()
 	fmt.Println()
@@ -51,10 +58,12 @@ func main() {
 	var insecure bool
 	var servername string
 	var silent bool
+	var sshFallbackPort int
 
 	flag.Usage = usage
 
 	flag.StringVar(&alpnList, "alpn", "", "acceptable protocols, ex: 'h2,http/1.1' 'http/1.1' 'ssh'")
+	flag.IntVar(&sshFallbackPort, "ssh", 0, "enable ssh ALPN and fall back to direct SSH on <port> if TLS+ssh fails (ex: 22)")
 	flag.BoolVar(&insecure, "k", false, "alias for --insecure")
 	flag.BoolVar(&silent, "s", false, "alias of --silent")
 	flag.StringVar(&servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
@@ -64,6 +73,9 @@ func main() {
 	flag.Parse()
 
 	alpns := parseOptionList(alpnList)
+	if sshFallbackPort > 0 && len(alpns) == 0 {
+		alpns = []string{"ssh"}
+	}
 	remotestr := flag.Arg(0)
 	localstr := flag.Arg(1)
 
@@ -85,6 +97,7 @@ func main() {
 		ServerName:         servername,
 		Silent:             silent,
 		NextProtos:         alpns,
+		SSHFallbackPort:    sshFallbackPort,
 	}
 
 	remote := strings.Split(remotestr, ":")
