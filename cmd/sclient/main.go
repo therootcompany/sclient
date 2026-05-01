@@ -51,6 +51,9 @@ func main() {
 	var insecure bool
 	var servername string
 	var silent bool
+	var httpAuthURL string
+	var authToken string
+	var httpUpgradeProtocol string
 
 	flag.Usage = usage
 
@@ -60,6 +63,9 @@ func main() {
 	flag.StringVar(&servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
 	flag.BoolVar(&insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
 	flag.BoolVar(&silent, "silent", false, "less verbose output")
+	flag.StringVar(&httpAuthURL, "http-auth", "", "authenticate via HTTP/1.1 before establishing tunnel (ex: 'proxy.example.com/auth')")
+	flag.StringVar(&authToken, "auth-token", "", "authentication token (sent as Bearer token in Authorization header)")
+	flag.StringVar(&httpUpgradeProtocol, "http-upgrade", "", "protocol to upgrade to after authentication (e.g., 'ssh') - uses HTTP Upgrade header to switch protocols on the same connection")
 
 	flag.Parse()
 
@@ -78,13 +84,32 @@ func main() {
 		}
 	}
 
+	authTokenFromURL := ""
+	if httpAuthURL != "" {
+		if idx := strings.Index(httpAuthURL, "token="); idx != -1 {
+			authTokenFromURL = httpAuthURL[idx+6:]
+			if idx2 := strings.Index(authTokenFromURL, "&"); idx2 != -1 {
+				authTokenFromURL = authTokenFromURL[:idx2]
+			} else if idx2 := strings.Index(authTokenFromURL, " "); idx2 != -1 {
+				authTokenFromURL = authTokenFromURL[:idx2]
+			}
+		}
+	}
+
 	sclient := &sclient.Tunnel{
-		RemotePort:         443,
-		LocalAddress:       "localhost",
-		InsecureSkipVerify: insecure,
-		ServerName:         servername,
-		Silent:             silent,
-		NextProtos:         alpns,
+		RemotePort:          443,
+		LocalAddress:        "localhost",
+		InsecureSkipVerify:  insecure,
+		ServerName:          servername,
+		Silent:              silent,
+		NextProtos:          alpns,
+		HttpAuthURL:         httpAuthURL,
+		AuthToken:           authToken,
+		HttpUpgradeProtocol: httpUpgradeProtocol,
+	}
+
+	if sclient.AuthToken == "" {
+		sclient.AuthToken = authTokenFromURL
 	}
 
 	remote := strings.Split(remotestr, ":")
