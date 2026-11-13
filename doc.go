@@ -12,7 +12,7 @@ advantage of the features of modern TLS, such as ALPN and SNI
 
 See https://telebit.cloud/sclient for more info.
 
-Package Basics
+# Package Basics
 
 In the simplest case you'll just be setting a ServerName and connection info:
 
@@ -28,7 +28,7 @@ In the simplest case you'll just be setting a ServerName and connection info:
 
 	err := sclient.DialAndListen()
 
-Try the CLI
+# Try the CLI
 
 If you'd like to better understand what sclient does, you can try it out with `go run`:
 
@@ -38,6 +38,5 @@ If you'd like to better understand what sclient does, you can try it out with `g
 
 Pre-built versions for various platforms are also available at
 https://telebit.cloud/sclient
-
 */
 package sclient
