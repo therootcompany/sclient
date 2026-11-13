@@ -2,3 +2,6 @@
 /cmd/sclient/sclient
 
 dist
+
+# agent working files
+/agents/
