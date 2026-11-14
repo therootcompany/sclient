@@ -1,3 +1,3 @@
 module git.rootprojects.org/root/sclient.go
 
-go 1.12
+go 1.27

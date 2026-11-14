@@ -1,0 +1,258 @@
+package main
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"runtime/debug"
+	"strconv"
+	"strings"
+	"time"
+
+	"git.rootprojects.org/root/sclient.go/internal/sshtlsproxy"
+)
+
+var (
+	name         = "ssh-tls-proxy"
+	version      = "0.0.0-dev"
+	commit       = "0000000"
+	date         = "0001-01-01"
+	licenseYear  = "2018"
+	licenseOwner = "AJ ONeal"
+	licenseType  = "MPL-2.0"
+)
+
+// printVersion reports the ldflags stamp when one was supplied, and falls
+// back to what Go embeds for a plain `go build` / `go run`: the module tag
+// (bi.Tag) plus the VCS revision and commit time. Every version string is
+// normalized without its "v" prefix so the printf below is the only place
+// that adds it - `git describe` and `bi.Tag` both include it already.
+func printVersion(w io.Writer) {
+	if version == "0.0.0-dev" || commit == "0000000" {
+		if bi, ok := debug.ReadBuildInfo(); ok {
+			// bi.Main.Version is "devel" for a plain go build; it carries the
+			// tag when built as `go install mod@vX.Y.Z`.
+			tag := strings.TrimPrefix(bi.Main.Version, "v")
+			if tag != "" && tag != "devel" {
+				version = tag
+			}
+			for _, s := range bi.Settings {
+				switch s.Key {
+				case "vcs.revision":
+					if commit == "0000000" {
+						commit = s.Value
+					}
+				case "vcs.time":
+					if date == "0001-01-01" {
+						date = s.Value
+					}
+				}
+			}
+		}
+	}
+	version = strings.TrimPrefix(version, "v")
+	short := commit
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	_, _ = fmt.Fprintf(w, "%s v%s (%s) %s\n", name, version, short, date)
+	_, _ = fmt.Fprintf(w, "Copyright (C) %s %s\n", licenseYear, licenseOwner)
+	_, _ = fmt.Fprintf(w, "Licensed under %s\n", licenseType)
+}
+
+func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-V", "-version", "--version", "version":
+			printVersion(os.Stdout)
+			os.Exit(0)
+		case "help", "-help", "--help":
+			printVersion(os.Stdout)
+			fmt.Fprintln(os.Stdout)
+			fs := newFlagSet(&sshtlsproxy.Config{}, &rawFlags{})
+			fs.SetOutput(os.Stdout)
+			fs.Usage()
+			os.Exit(0)
+		}
+	}
+
+	cfg, tlsCfg, ok := parseArgs(os.Args[1:])
+	if !ok {
+		os.Exit(2)
+	}
+	cfg.Name = name
+	cfg.TLS = tlsCfg
+	// Diagnostic writer: main picks the destination. When ssh has
+	// nulled this command's stderr (ControlPath + valued
+	// ControlPersist), StderrOrTTY also reaches the terminal.
+	diag := sshtlsproxy.StderrOrTTY()
+	defer diag.Close()
+	// 0 session done, 255 no usable server (ssh convention), 1 client-side
+	// failure.
+	var code int
+	switch err := sshtlsproxy.Probe(context.Background(), cfg, os.Stdin, os.Stdout, diag); {
+	case errors.Is(err, sshtlsproxy.ErrNoServer):
+		code = 255
+	case err != nil:
+		code = 1
+	}
+	os.Exit(code)
+}
+
+// rawFlags holds the values that need post-processing before they can
+// become a config: the ALPN list, the duration, the server name, and
+// the insecure aliases.
+type rawFlags struct {
+	alpnRaw    string
+	serverName string
+	timeoutSec float64
+	insecure   bool
+}
+
+// newFlagSet registers all flags on fs.
+func newFlagSet(cfg *sshtlsproxy.Config, raw *rawFlags) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+
+	fs.IntVar(&cfg.SSHPort, "ssh-port", 22, "plain-SSH server port (usually %p)")
+	fs.IntVar(&cfg.TLSPort, "tls-port", 443, "TLS-terminated SSH server port")
+	fs.StringVar(&raw.alpnRaw, "alpn", "ssh", "acceptable ALPN protocols, ex: 'ssh' 'h2,http/1.1'")
+	fs.Float64Var(&raw.timeoutSec, "timeout", 3, "overall timeout in seconds")
+	fs.StringVar(&raw.serverName, "servername", "", "SNI / hostname to verify (default: <host>)")
+	fs.BoolVar(&raw.insecure, "k", false, "alias for --insecure")
+	fs.BoolVar(&raw.insecure, "insecure", false, "ignore bad TLS/SSL certificates")
+	fs.BoolVar(&cfg.Verbose, "v", false, "alias for --verbose")
+	fs.BoolVar(&cfg.Verbose, "verbose", false, "more verbose output")
+	fs.BoolVar(&cfg.Silent, "s", false, "alias for --silent")
+	fs.BoolVar(&cfg.Silent, "silent", false, "less verbose output")
+
+	fs.Usage = func() {
+		_, _ = fmt.Fprintf(fs.Output(), "USAGE\n  %s [flags] <host>\n\n", name)
+		_, _ = fmt.Fprintf(fs.Output(), "example ssh_config:\n")
+		_, _ = fmt.Fprintf(fs.Output(), "  Host *\n")
+		_, _ = fmt.Fprintf(fs.Output(), "      ProxyCommand %s --timeout 3 --alpn ssh --ssh-port %%p %%h\n\n", name)
+		_, _ = fmt.Fprintln(fs.Output(), "FLAGS")
+		fs.PrintDefaults()
+		_, _ = fmt.Fprintln(fs.Output(), "\nENVIRONMENT")
+		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_SSH_PORT     plain-SSH server port")
+		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_TLS_PORT     TLS-terminated SSH server port")
+		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_ALPN         acceptable ALPN protocols")
+		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_TIMEOUT      overall timeout in seconds")
+		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_SERVERNAME   SNI / hostname to verify")
+	}
+
+	return fs
+}
+
+func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
+	cfg := sshtlsproxy.Config{}
+	raw := rawFlags{}
+	fs := newFlagSet(&cfg, &raw)
+
+	if err := fs.Parse(args); err != nil {
+		return sshtlsproxy.Config{}, nil, false
+	}
+
+	// Visit reports only the flags the operator actually gave, so it has to
+	// run after Parse, not before.
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if fs.NArg() != 1 {
+		fmt.Fprintf(os.Stderr, "%s: expected exactly one <host> argument\n", name)
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return sshtlsproxy.Config{}, nil, false
+	}
+
+	// Env vars fill in only flags the operator did not set. Malformed
+	// values are ignored: the flag default stands.
+	if !set["ssh-port"] {
+		if v := os.Getenv("SSHTLSPROXY_SSH_PORT"); v != "" {
+			if p, err := strconv.Atoi(v); err == nil {
+				cfg.SSHPort = p
+			}
+		}
+	}
+	if !set["tls-port"] {
+		if v := os.Getenv("SSHTLSPROXY_TLS_PORT"); v != "" {
+			if p, err := strconv.Atoi(v); err == nil {
+				cfg.TLSPort = p
+			}
+		}
+	}
+	if !set["alpn"] {
+		if v := os.Getenv("SSHTLSPROXY_ALPN"); v != "" {
+			raw.alpnRaw = v
+		}
+	}
+	if !set["timeout"] {
+		if v := os.Getenv("SSHTLSPROXY_TIMEOUT"); v != "" {
+			if tsec, err := strconv.ParseFloat(v, 64); err == nil && tsec > 0 {
+				raw.timeoutSec = tsec
+			}
+		}
+	}
+	if !set["servername"] {
+		raw.serverName = strings.TrimSpace(os.Getenv("SSHTLSPROXY_SERVERNAME"))
+	}
+
+	cfg.ALPN = parseOptionList(raw.alpnRaw)
+	// An explicit --alpn '' is "no ALPN requirement" (sclient
+	// semantics): non-nil empty, so the engine keeps it and takes no
+	// note. An omitted flag is nil and takes the engine default.
+	if set["alpn"] && cfg.ALPN == nil {
+		cfg.ALPN = []string{}
+	}
+	cfg.Timeout = time.Duration(raw.timeoutSec * float64(time.Second))
+
+	// %h never legitimately carries a port (ssh takes ports from -p /
+	// Port), but if it does, treat it as the TLS port. A colon with no
+	// numeric port is garbage, not a host:port - usage error.
+	host := fs.Arg(0)
+	if h, p, err := net.SplitHostPort(host); err == nil && !strings.Contains(h, ":") {
+		port, aerr := strconv.Atoi(p)
+		if aerr != nil {
+			fmt.Fprintf(os.Stderr, "%s: %q: the port after the colon is not numeric\n", name, host)
+			return sshtlsproxy.Config{}, nil, false
+		}
+		host, cfg.TLSPort = h, port
+	}
+	cfg.Host = host
+
+	if cfg.Timeout <= 0 {
+		fmt.Fprintf(os.Stderr, "%s: --timeout must be > 0\n", name)
+		return sshtlsproxy.Config{}, nil, false
+	}
+	if cfg.SSHPort <= 0 || cfg.TLSPort <= 0 {
+		fmt.Fprintf(os.Stderr, "%s: ports must be > 0\n", name)
+		return sshtlsproxy.Config{}, nil, false
+	}
+
+	// The TLS side is this tool's option set, made explicit: the engine
+	// uses the config as-is.
+	serverName := raw.serverName
+	if serverName == "" {
+		serverName = host
+	}
+	tlsCfg := &tls.Config{
+		ServerName:         serverName,
+		NextProtos:         cfg.ALPN,
+		InsecureSkipVerify: raw.insecure,
+		MinVersion:         tls.VersionTLS12,
+	}
+	return cfg, tlsCfg, true
+}
+
+// parseOptionList parses "a,b,c" "a b c" and "a, b, c" the same.
+func parseOptionList(optionList string) []string {
+	optionList = strings.TrimSpace(optionList)
+	if optionList == "" {
+		return nil
+	}
+	optionList = strings.ReplaceAll(optionList, ",", " ")
+	return strings.Fields(optionList)
+}

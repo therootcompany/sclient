@@ -3,7 +3,13 @@ before:
     - go mod download
     - go generate ./...
 builds:
-  - main: ./cmd/sclient/
+  - id: sclient
+    main: ./cmd/sclient/
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
     env:
       - CGO_ENABLED=0
     goos:
@@ -28,8 +34,46 @@ builds:
         goarm: 6
       - goos: windows
         goarm: 7
+  - id: ssh-tls-proxy
+    main: ./cmd/ssh-tls-proxy/
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - freebsd
+      - windows
+    goarch:
+      - amd64
+      - arm
+      - arm64
+    goarm:
+      - 7
+    goamd64:
+      - v2
+    ignore:
+      - goos: windows
+        goarch: 386
+      - goos: windows
+        goarm: 6
+      - goos: windows
+        goarm: 7
 archives:
   - id: sclient-binary
+    ids: [sclient]
+    name_template: "sclient_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.xz
+    format_overrides:
+      - goos: windows
+        format: zip
+  - id: ssh-tls-proxy-binary
+    ids: [ssh-tls-proxy]
+    name_template: "ssh-tls-proxy_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format: tar.xz
     format_overrides:
       - goos: windows
