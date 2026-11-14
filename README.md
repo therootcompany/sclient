@@ -40,6 +40,7 @@ A poor man's (or Windows user's) makeshift replacement for `openssl s_client`,
 - [Usage](#usage)
 - [Examples](#examples)
 - [ssh-tls-proxy](#ssh-tls-proxy)
+- [sclient --ssh](#sclient---ssh)
 - [Build from Source](#build-from-source)
 
 # Install
@@ -188,6 +189,33 @@ come from
 ```bash
 curl -sS https://webinstall.dev/ssh-tls-proxy | bash
 ```
+
+# sclient --ssh
+
+`sclient --ssh` is the same dual-port probe as `ssh-tls-proxy`, in the
+sclient shape: instead of a single TLS connection to `<remote>`, each
+connection goes through the `sshtlsproxy` engine — plain port (22) and
+TLS port (443, ALPN `ssh`) probed at once, the SSH identification-banner
+exchange run against whichever answer(s) arrive, the TLS-terminated
+connection preferred, and the winner spliced in.
+
+```bash
+# stunnel-style: a local listener for SSH clients
+sclient --ssh example.com:443 localhost:3000
+
+# straight through stdin/stdout (usable as an ssh ProxyCommand)
+ssh -o 'ProxyCommand=sclient --ssh example.com' example.com
+```
+
+The local side must be an SSH client: the first line of each connection
+must be an `SSH-2.0` banner. `--alpn` defaults to `ssh` in this mode
+(`--alpn ''` means "no ALPN requirement"); `--ssh-port` (default 22) and
+`--timeout` seconds (default 3) are also available. Exit codes: 0 done,
+1 failure, 2 usage, 255 no usable server.
+
+The failure report goes to sclient's stderr — there is no
+`/dev/tty` mirror here, because a standalone tool is not an ssh
+ProxyCommand with its stderr swallowed.
 
 # API
 
