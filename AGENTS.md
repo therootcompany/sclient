@@ -44,7 +44,7 @@ Rules:
   README, this file, or commit messages. Refer to them by role
   ("a router guest", "one of the fleet's routers").
 - Owner exception (2026-11-14): the following are PUBLIC services and
-  may be named in tests (tests/ssh-tls-proxy.sh): example.com,
+  may be named in tests (tests/ssh-tls-proxy.sh, tests/sclient-ssh.sh): example.com,
   github.com, vms.slc1.bnna.net, ip.bnna.net, pw.bnna.net.
 - Probe hygiene: banner exchange, one auth attempt, no state changes.
   Throwaway `known_hosts` files for probing go in `agents/tmp/` and are
