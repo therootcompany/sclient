@@ -39,6 +39,7 @@ A poor man's (or Windows user's) makeshift replacement for `openssl s_client`,
 - [Install](#install)
 - [Usage](#usage)
 - [Examples](#examples)
+- [ssh-tls-proxy](#ssh-tls-proxy)
 - [Build from Source](#build-from-source)
 
 # Install
@@ -139,6 +140,55 @@ sclient --servername "Robert'); DROP TABLE Students;" -k example.com localhost:3
 sclient --servername "../../../.hidden/private.txt" -k example.com localhost:3000
 ```
 
+# ssh-tls-proxy
+
+`ssh-tls-proxy` is an [ssh](https://www.openssh.com/) `ProxyCommand` for
+hosts that offer SSH over **both** plain TCP (port 22) and TLS-terminated
+SSH (port 443, ALPN `ssh`) — e.g. behind a TLS SNI router. It dials both
+ports at once, runs the SSH identification-banner exchange against
+whichever answer(s) it gets, prefers the TLS-terminated connection, and
+splices you onto the winner. You only set `ProxyCommand`:
+
+```bash
+Host *
+    ProxyCommand ssh-tls-proxy --timeout 3 --alpn ssh --ssh-port %p %h
+```
+
+- If the TLS side answers first (or at all, if both do), it wins.
+- If only the plain side answers, it is used — the client never notices.
+- If neither is usable, the proxy prints which ports failed to its
+  stderr and exits 255. Note that since OpenSSH 8.0, when both
+  `ControlPath` and a valued `ControlPersist` are set (the common
+  `Host *` setup), ssh redirects a ProxyCommand's stderr to /dev/null.
+  In that case the proxy detects it and, when the client runs in a
+  terminal, also writes the diagnostic to the controlling terminal
+  (`/dev/tty`) — still reachable, because the proxy is forked before
+  the master detaches into the background. With no terminal at all
+  (cron, CI) only ssh's own `Connection closed by UNKNOWN port 65535`
+  line shows; the 255 exit status always propagates. Run the proxy
+  standalone, or ssh with `-o ControlPath=none` (or `-o
+  ControlPersist=no`, or `-v`), for the message on plain stderr.
+- **Host keys / which server answers:** behind these routers, 443 (SNI +
+  ALPN) and 22 can be served by *different* backends — on a tenant name,
+  443 is the intended server while 22 is the router's own ssh. Each
+  backend has its own host key, and OpenSSH accepts only one key per
+  name, so if the path that wins changes for a name you'll get
+  `REMOTE HOST IDENTIFICATION HAS CHANGED` until you re-record the key.
+  The proxy cannot tell the backends apart; if the :22 fallback is not
+  the server you want for a given name, steer with `--ssh-port` in the
+  `ProxyCommand` line.
+
+Flags: `--ssh-port` (default 22), `--tls-port` (default 443), `--alpn`
+(default `ssh`), `--timeout` seconds (default 3, one overall budget),
+`--servername`, `-k/--insecure`, `-v/--verbose`, `-s/--silent`.
+The same values can
+come from
+`SSHTLSPROXY_*` environment variables when the flag is not set.
+
+```bash
+curl -sS https://webinstall.dev/ssh-tls-proxy | bash
+```
+
 # API
 
 See [Go Docs](https://pkg.go.dev/github.com/therootcompany/sclient).
@@ -171,3 +221,14 @@ sclient example.com:443 localhost:3000
 go get git.rootprojects.org/root/sclient.go/cmd/sclient
 go run git.rootprojects.org/root/sclient.go/cmd/sclient example.com:443 localhost:3000
 ```
+
+`ssh-tls-proxy` reports its version from the build stamp. goreleaser supplies
+`main.version`, `main.commit`, and `main.date`; an ad-hoc build can do the same:
+
+```bash
+LDFLAGS="-X main.version=$(git describe --tags --match 'v*' --dirty) -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+go build -ldflags "$LDFLAGS" -o dist/ssh-tls-proxy ./cmd/ssh-tls-proxy/
+```
+
+A plain `go build` (no ldflags) falls back to the tag and commit hash that Go
+embeds itself, so `ssh-tls-proxy -V` is never a placeholder.
