@@ -30,7 +30,8 @@ var ErrNoServer = errors.New("no usable server")
 // engine defaults: ports 22/443, a 3s overall clock, ALPN "ssh" (this
 // is an SSH proxy). ALPN nil means the default; an explicitly empty
 // list means the caller wants no ALPN (nothing offered, no note).
-// Dialer nil means a bare net.Dialer. TLS is the caller's
+// Dialer nil means the engine's default dialer: each connect bounded by
+// the probe clock, 30s TCP keep-alive. TLS is the caller's
 // *tls.Config, used as-is when non-nil; when nil the engine builds the
 // default: ServerName = Host, NextProtos = ALPN, MinVersion TLS 1.2.
 // ALPN is also used for the diagnostic note when the negotiated
@@ -187,7 +188,7 @@ func tlsHandshake(ctx context.Context, conn net.Conn, tlsCfg *tls.Config) (*tls.
 }
 
 // resolved fills in the engine defaults: ports 22/443, a 3s clock,
-// ALPN "ssh", a bare net.Dialer, and the default tls.Config when the
+// ALPN "ssh", a default dialer, and the default tls.Config when the
 // caller did not supply one.
 func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 	if cfg.SSHPort == 0 {
@@ -204,7 +205,10 @@ func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 	}
 	dialer := cfg.Dialer
 	if dialer == nil {
-		dialer = &net.Dialer{}
+		dialer = &net.Dialer{
+			Timeout:   cfg.Timeout, // the clock bounds each connect too
+			KeepAlive: 30 * time.Second,
+		}
 	}
 	tlsCfg := cfg.TLS
 	if tlsCfg == nil {

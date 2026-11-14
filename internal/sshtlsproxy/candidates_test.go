@@ -307,6 +307,9 @@ func TestResolvedDefaults(t *testing.T) {
 	if dialer == nil {
 		t.Error("nil dialer, want the default")
 	}
+	if dialer != nil && (dialer.Timeout != 3*time.Second || dialer.KeepAlive != 30*time.Second) {
+		t.Errorf("dialer = %+v, want a 3s connect timeout and 30s keep-alive", dialer)
+	}
 	if tlsCfg == nil {
 		t.Fatal("nil tls config, want the default")
 	}

@@ -77,7 +77,7 @@ func main() {
 	flag.BoolVar(&silent, "silent", false, "less verbose output")
 	flag.BoolVar(&sshMode, "ssh", false, "SSH mode: probe the plain (22) and TLS (443) ports at once and splice the winner; the local side must be an SSH client")
 	flag.IntVar(&sshPort, "ssh-port", 0, "plain-SSH server port, default 22 (--ssh)")
-	flag.Float64Var(&timeoutSec, "timeout", 0, "overall timeout in seconds, default 3 (--ssh)")
+	flag.Float64Var(&timeoutSec, "timeout", 0, "seconds to wait until a remote connection is ready to communicate (TCP connect + TLS handshake). Plain mode: default 10, 0 = no limit. --ssh: the engine's probe clock, default 3")
 
 	flag.Parse()
 
@@ -108,6 +108,7 @@ func main() {
 		ServerName:         servername,
 		Silent:             silent,
 		NextProtos:         alpns,
+		Timeout:            time.Duration(plainTimeout(timeoutSec, set["timeout"]) * float64(time.Second)),
 	}
 
 	if sshMode {
@@ -176,6 +177,20 @@ func parseOptionList(optionList string) []string {
 	options := strings.Fields(optionList)
 
 	return options
+}
+
+// defaultPlainTimeout bounds a plain (non-ssh) remote connect in
+// seconds, matching ssh's ConnectTimeout convention.
+const defaultPlainTimeout = 10
+
+// plainTimeout is the operator's --timeout for plain mode, or the
+// default when the flag was not given. An explicit --timeout 0 is a
+// legitimate request for "no limit".
+func plainTimeout(raw float64, explicit bool) float64 {
+	if explicit {
+		return raw
+	}
+	return defaultPlainTimeout
 }
 
 // runSSH is the --ssh transport: the stdio pair, or every connection

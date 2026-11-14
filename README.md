@@ -209,13 +209,18 @@ ssh -o 'ProxyCommand=sclient --ssh example.com' example.com
 
 The local side must be an SSH client: the first line of each connection
 must be an `SSH-2.0` banner. `--alpn` defaults to `ssh` in this mode
-(`--alpn ''` means "no ALPN requirement"); `--ssh-port` (default 22) and
-`--timeout` seconds (default 3) are also available. Exit codes: 0 done,
+(`--alpn ''` means "no ALPN requirement"); `--ssh-port` (default 22) is
+also available. Exit codes: 0 done,
 1 failure, 2 usage, 255 no usable server.
 
 The failure report goes to sclient's stderr — there is no
 `/dev/tty` mirror here, because a standalone tool is not an ssh
 ProxyCommand with its stderr swallowed.
+
+`--timeout` is seconds until a remote connection is ready to
+communicate: the TCP connect and the TLS handshake share one deadline.
+Plain mode defaults to 10 (`--timeout 0` means no limit); `--ssh` uses
+the engine's probe clock, default 3.
 
 # API
 

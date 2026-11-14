@@ -47,6 +47,26 @@ func TestSSHALPN(t *testing.T) {
 	}
 }
 
+func TestPlainTimeout(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      float64
+		explicit bool
+		want     float64
+	}{
+		{"unset takes the default", 0, false, 10},
+		{"explicit zero means no limit", 0, true, 0},
+		{"explicit value wins", 2.5, true, 2.5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := plainTimeout(tc.raw, tc.explicit); got != tc.want {
+				t.Fatalf("plainTimeout(%v, %v) = %v, want %v", tc.raw, tc.explicit, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNewSSHConfigDefaults(t *testing.T) {
 	cfg, err := newSSHConfig("example.com", "", []string{"ssh"}, false, false, 0, 0)
 	if err != nil {
