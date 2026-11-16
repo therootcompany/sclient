@@ -68,7 +68,7 @@ elapsed=$(( $(date +%s) - start ))
 # success is not required, so key rotation will not break the suite.
 if [ "${LIVE:-0}" = 1 ]; then
   out=$(ssh $SSH_OPTS \
-    -o "ProxyCommand=./bin/sclient --ssh-port $SSH_PORT --timeout 3 %n:443" \
+    -o "ProxyCommand=./bin/sclient --ssh-port $SSH_PORT --timeout 3 %h:443" \
     pw.bnna.net true 2>&1)
   case "$out" in
     *"using tls"*) ;;
@@ -78,7 +78,7 @@ if [ "${LIVE:-0}" = 1 ]; then
   # 5. Plain mode + the SSH banner sniff: no --ssh-port, still reaches sshd
   # over 443 because the client announced itself as SSH.
   out=$(ssh $SSH_OPTS \
-    -o "ProxyCommand=./bin/sclient %n:443 -" \
+    -o "ProxyCommand=./bin/sclient %h:443 -" \
     pw.bnna.net true 2>&1)
   case "$out" in
     *"publickey"*) ;;

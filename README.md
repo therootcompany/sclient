@@ -176,7 +176,7 @@ one by default, so it looks at the first bytes the local side sends: an RFC
 Nothing is consumed - the banner is relayed to the remote as-is.
 
 ```bash
-ssh -o ProxyCommand='sclient %n:443 -' example.com
+ssh -o ProxyCommand='sclient %h:443 -' example.com
 ```
 
 Detection never overrides a flag:
@@ -202,7 +202,7 @@ splices you onto the winner. You only set `ProxyCommand`:
 
 ```bash
 Host *
-    ProxyCommand ssh-tls-proxy --timeout 3 --alpn ssh --ssh-port %p %n:443
+    ProxyCommand ssh-tls-proxy --timeout 3 --alpn ssh --ssh-port %p %h:443
 ```
 
 - If the TLS side answers first (or at all, if both do), it wins.
@@ -255,10 +255,10 @@ TLS-terminated connection preferred, and the winner spliced in.
 sclient --ssh-port 22 example.com:443 localhost:3000
 
 # as an ssh ProxyCommand: plain %p and TLS 443 probed at once
-ssh -o ProxyCommand='sclient --ssh-port %p %n:443' example.com
+ssh -o ProxyCommand='sclient --ssh-port %p %h:443' example.com
 ```
 
-Write the TLS port out (`%n:443`) rather than leaving it implied: it names
+Write the TLS port out (`%h:443`) rather than leaving it implied: it names
 the front being probed, and it keeps `%p` unambiguously the plain SSH port.
 
 The local side must be an SSH client: the first line of each connection must

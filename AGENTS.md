@@ -48,7 +48,7 @@ flag: a single TLS connection.
 Documented ssh_config form - the TLS port is written out, never implied:
 
 ```
-ProxyCommand sclient --ssh-port %p %n:443
+ProxyCommand sclient --ssh-port %p %h:443
 ```
 
 `--timeout` is always bounded: `0` means "the default" (3s), never

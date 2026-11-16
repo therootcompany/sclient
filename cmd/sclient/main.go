@@ -43,7 +43,7 @@ func usage() {
 		"\n"+
 		"   ex: sclient example.com:443 -\n"+
 		"\n"+
-		"   ex: ssh -o ProxyCommand='sclient --ssh-port %%p %%n:443' example.com\n"+
+		"   ex: ssh -o ProxyCommand='sclient --ssh-port %%p %%h:443' example.com\n"+
 		"      (dual-port SSH probe; the local side must be an SSH client)\n"+
 		"      (--ssh is the same thing with --ssh-port 22)\n"+
 		"\n"+
