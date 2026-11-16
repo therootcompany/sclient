@@ -28,11 +28,17 @@ type Tunnel struct {
 	Timeout time.Duration
 }
 
-// tlsConfig builds the client config for one remote. An empty ServerName
-// takes the remote host, which is what tls.Dial does when it is left unset.
+// tlsConfig builds the client config for one remote. The operator's
+// --servername is the name to send as SNI and verify against; when it is
+// empty the remote host is used, which is what tls.Dial does when
+// ServerName is left unset.
 func (t *Tunnel) tlsConfig(host string) *tls.Config {
+	serverName := t.ServerName
+	if serverName == "" {
+		serverName = host
+	}
 	return &tls.Config{
-		ServerName:         host,
+		ServerName:         serverName,
 		NextProtos:         t.NextProtos,
 		InsecureSkipVerify: t.InsecureSkipVerify,
 	}

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"sync/atomic"
 )
 
 // stallTLS accepts TCP but never handshakes, so the deadline must fire.
@@ -79,6 +81,33 @@ func readyTLS(t *testing.T) string {
 	return ln.Addr().String()
 }
 
+// sniTLS serves a real handshake and records the SNI the client sent.
+func sniTLS(t *testing.T) (string, *atomic.Value) {
+	t.Helper()
+	cert := selfSigned(t)
+	seen := new(atomic.Value)
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		GetCertificate: func(ch *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			seen.Store(ch.ServerName)
+			return &cert, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.(*tls.Conn).Handshake()
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	return ln.Addr().String(), seen
+}
+
 // One deadline covers connect + handshake: a server that accepts TCP but
 // never handshakes fails at the Timeout instead of hanging.
 func TestDialTLSStalledHandshake(t *testing.T) {
@@ -94,6 +123,33 @@ func TestDialTLSStalledHandshake(t *testing.T) {
 	}
 	if el := time.Since(start); el < 250*time.Millisecond || el > 2*time.Second {
 		t.Fatalf("took %v, want ~300ms", el)
+	}
+}
+
+// The name to verify is the operator's --servername, not the remote
+// address: it is the SNI on the wire and the name the certificate is
+// checked against.
+func TestDialTLSServerName(t *testing.T) {
+	remote, seen := sniTLS(t)
+	tun := &Tunnel{Timeout: 2 * time.Second, ServerName: "alt.example", InsecureSkipVerify: true}
+	conn, err := tun.dialTLS(remote)
+	if err != nil {
+		t.Fatalf("dialTLS: %v", err)
+	}
+	_ = conn.Close()
+	if got, _ := seen.Load().(string); got != "alt.example" {
+		t.Fatalf("SNI = %q, want the Tunnel.ServerName", got)
+	}
+}
+
+// An unset --servername takes the remote host. tls.Dial did this implicitly;
+// the bounded dial has to do it explicitly or the handshake has no name.
+func TestTunnelTLSConfigServerName(t *testing.T) {
+	if got := (&Tunnel{ServerName: "alt.example"}).tlsConfig("127.0.0.1").ServerName; got != "alt.example" {
+		t.Fatalf("ServerName = %q, want the operator's name", got)
+	}
+	if got := (&Tunnel{}).tlsConfig("example.com").ServerName; got != "example.com" {
+		t.Fatalf("ServerName = %q, want the remote host", got)
 	}
 }
 
