@@ -88,7 +88,18 @@ func main() {
 
 	flag.Parse()
 
-	if sshPort < 0 || sshPort > 65535 {
+	// Visit sees only flags the operator gave, so it runs after Parse.
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	if set["ssh-port"] && sshPort <= 0 {
+		// 0 is the sentinel for "no SSH mode", not a port. Naming the flag is
+		// the mode switch, so a named zero is a mistake, not a request.
+		fmt.Fprintf(os.Stderr, "sclient: --ssh-port must be 1-65535 (omit it for a plain TLS tunnel)\n")
+		usage()
+		os.Exit(2)
+	}
+	if sshPort > 65535 {
 		fmt.Fprintf(os.Stderr, "sclient: --ssh-port %d is not a port\n", sshPort)
 		usage()
 		os.Exit(2)
@@ -98,10 +109,6 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
-
-	// Visit sees only flags the operator gave, so it runs after Parse.
-	set := map[string]bool{}
-	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
 	alpns := plainALPN(alpnList, set["alpn"])
 	remotestr := flag.Arg(0)

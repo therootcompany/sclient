@@ -51,6 +51,8 @@ elapsed=$(( $(date +%s) - start ))
 [ $? = 2 ] || note "bad remote port: want exit 2"
 ./bin/sclient --ssh-port -1 example.com >/dev/null 2>&1
 [ $? = 2 ] || note "negative --ssh-port: want exit 2"
+./bin/sclient --ssh-port 0 example.com >/dev/null 2>&1
+[ $? = 2 ] || note "explicit --ssh-port 0: want exit 2 (0 is the sentinel, not a port)"
 
 # 4. Live SSH mode: a router guest reached through 443 + ALPN. The selection
 # line is the assertion; auth success is not required, so key rotation will
