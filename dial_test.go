@@ -175,24 +175,29 @@ func TestDialTLSDefaultsServerName(t *testing.T) {
 	}
 }
 
-// The clocks resolve to defaults when nothing is named, and the ceiling is the
-// sum of the two - there is no unlimited mode and no separate ceiling.
-func TestTunnelTimeouts(t *testing.T) {
+// Unnamed clocks take the defaults; the handshake clock is auto - twice the
+// connect that just happened, floored - and an explicit clock wins outright.
+func TestClocks(t *testing.T) {
 	cases := []struct {
-		name string
-		tun  Tunnel
-		want [3]time.Duration // connect, handshake, ceiling
+		name    string
+		tun     Tunnel
+		connect time.Duration
+		elapsed time.Duration // the connect the handshake clock is built from
+		want    time.Duration
 	}{
-		{"nothing named takes the defaults", Tunnel{}, [3]time.Duration{5 * time.Second, 45 * time.Second, 50 * time.Second}},
-		{"a named connect clock moves the ceiling too", Tunnel{TCPTimeout: 2 * time.Second}, [3]time.Duration{2 * time.Second, 45 * time.Second, 47 * time.Second}},
-		{"a named handshake clock moves the ceiling too", Tunnel{TLSTimeout: 2 * time.Second}, [3]time.Duration{5 * time.Second, 2 * time.Second, 7 * time.Second}},
-		{"both clocks named add up", Tunnel{TCPTimeout: 2 * time.Second, TLSTimeout: 3 * time.Second}, [3]time.Duration{2 * time.Second, 3 * time.Second, 5 * time.Second}},
+		{"nothing named takes the default connect", Tunnel{}, 5 * time.Second, 40 * time.Millisecond, 150 * time.Millisecond},
+		{"a named connect clock is used verbatim", Tunnel{TCPTimeout: 2 * time.Second}, 2 * time.Second, 40 * time.Millisecond, 150 * time.Millisecond},
+		{"the handshake floor covers a sub-millisecond connect", Tunnel{}, 5 * time.Second, time.Millisecond, 150 * time.Millisecond},
+		{"auto handshake is twice the connect", Tunnel{TCPTimeout: 200 * time.Millisecond}, 200 * time.Millisecond, 80 * time.Millisecond, 160 * time.Millisecond},
+		{"an explicit handshake clock wins", Tunnel{TLSTimeout: 3 * time.Second}, 5 * time.Second, 10 * time.Millisecond, 3 * time.Second},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			connect, handshake, ceiling := tc.tun.timeouts()
-			if connect != tc.want[0] || handshake != tc.want[1] || ceiling != tc.want[2] {
-				t.Fatalf("timeouts() = %v/%v/%v, want %v/%v/%v", connect, handshake, ceiling, tc.want[0], tc.want[1], tc.want[2])
+			if got := tc.tun.connectClock(); got != tc.connect {
+				t.Fatalf("connectClock() = %v, want %v", got, tc.connect)
+			}
+			if got := tc.tun.handshakeClock(tc.elapsed); got != tc.want {
+				t.Fatalf("handshakeClock(%v) = %v, want %v", tc.elapsed, got, tc.want)
 			}
 		})
 	}

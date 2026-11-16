@@ -123,13 +123,12 @@ func hostPort(t *testing.T, addr string) (string, int) {
 	return host, port
 }
 
-// The loopback clocks. A connect to 127.0.0.1 takes well under a millisecond
-// and a handshake against a test certificate a handful of them, so 250ms is
-// a hundred-fold margin: a stalled dial is reported in a quarter of a second,
-// never at the engine's 45s handshake default.
+// The loopback clocks. Measured on 127.0.0.1: a connect is under a millisecond
+// and a TLS handshake never exceeded 6ms, so 100ms is more than ten times the
+// worst case. Tests name both clocks; nothing sits out an engine default.
 const (
-	loopbackConnect   = 250 * time.Millisecond
-	loopbackHandshake = 250 * time.Millisecond
+	loopbackConnect   = 100 * time.Millisecond
+	loopbackHandshake = 100 * time.Millisecond
 )
 
 func baseConfig(t *testing.T, host string, sshPort, tlsPort int) Config {
@@ -331,7 +330,7 @@ func TestRunPlainWinsWhenTLSBlackholes(t *testing.T) {
 	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
 	start := time.Now()
 	err, lines := runClient(t, cfg, io.Discard)
-	t.Logf("probe ran %v against the 250ms loopback clocks", time.Since(start).Round(10*time.Millisecond))
+	t.Logf("probe ran %v against the 100ms loopback clocks", time.Since(start).Round(10*time.Millisecond))
 	if err != nil {
 		t.Fatalf("err = %v; lines: %q", err, lines)
 	}
@@ -380,6 +379,64 @@ func TestRunBannerWindowFloorOnShortTimeout(t *testing.T) {
 	}
 	if !strings.Contains(diag.String(), "read banner") {
 		t.Errorf("expected a banner read error, got: %s", diag.String())
+	}
+}
+
+// An unanswered handshake is bounded by the auto clock (2x the connect, floor
+// 150ms), not by a long default: a front that never gets to the banner is a
+// failure the report states in the open.
+func TestRunAutoHandshakeFailsFast(t *testing.T) {
+	tlsAddr := startSilentServer(t)
+	_, tlsPort := hostPort(t, tlsAddr)
+
+	cfg := baseConfig(t, "127.0.0.1", 1, tlsPort) // plain side refused
+	cfg.TLSTimeout = 0                            // auto
+	var diag strings.Builder
+	start := time.Now()
+	err, _ := runClient(t, cfg, &diag)
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrNoServer) {
+		t.Fatalf("want ErrNoServer, got %v; diag: %s", err, diag.String())
+	}
+	if !strings.Contains(diag.String(), "TLS handshake did not complete") {
+		t.Errorf("expected the handshake timeout in the report, got: %s", diag.String())
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("the probe took %v; the handshake clock is not auto-tight", elapsed)
+	}
+}
+
+// A plain banner that declares the name we dialled is proof of identity on its
+// own: the TLS handshake is cut short even when the operator asked for a long
+// handshake clock, so a front "issuing a certificate" cannot hold the session.
+func TestRunConfirmedPlainCutsTheTLSHandshake(t *testing.T) {
+	if !loopbackTLSOK {
+		t.Skip("loopback TLS broken in this environment (see probeLoopbackTLS)")
+	}
+	tlsAddr := startSilentServer(t) // a front that never gets to the banner
+	sshAddr := startBannerServer(t, "SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 host:guest.example.com", "", "", nil)
+	_, tlsPort := hostPort(t, tlsAddr)
+	_, sshPort := hostPort(t, sshAddr)
+
+	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
+	cfg.ServerName = "guest.example.com"
+	cfg.TLSTimeout = 3 * time.Second // the operator's generous clock is irrelevant here
+	cfg.Verbose = true               // so the skipped handshake shows up in the report
+	var diag strings.Builder
+	start := time.Now()
+	err, lines := runClient(t, cfg, &diag)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("err = %v; lines: %q", err, lines)
+	}
+	if len(lines) < 1 || lines[0] != "SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 host:guest.example.com" {
+		t.Errorf("banners = %q, want the declaring plain server's", lines)
+	}
+	if !strings.Contains(diag.String(), "handshake skipped") {
+		t.Errorf("expected the handshake to be cut short, got: %s", diag.String())
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Errorf("the probe ran %v; the confirmed plain path should end the probe", elapsed)
 	}
 }
 

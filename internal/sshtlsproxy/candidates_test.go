@@ -129,6 +129,29 @@ func TestDialCandidateRefusedPort(t *testing.T) {
 	}
 }
 
+// The handshake clock is the operator's number, or auto: twice the connect
+// that just happened, floored so a sub-millisecond loopback connect cannot
+// strangle a real handshake.
+func TestHandshakeClock(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		connect time.Duration
+		want    time.Duration
+	}{
+		{"an explicit clock wins outright", Config{TLSTimeout: 3 * time.Second}, 20 * time.Millisecond, 3 * time.Second},
+		{"auto is twice the connect", Config{}, 80 * time.Millisecond, 160 * time.Millisecond},
+		{"the floor covers a sub-millisecond connect", Config{}, time.Millisecond, minHandshakeClock},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := handshakeClock(tc.cfg, tc.connect); got != tc.want {
+				t.Fatalf("handshakeClock(%v) = %v, want %v", tc.connect, got, tc.want)
+			}
+		})
+	}
+}
+
 // The clock and the caller are different cancels and the report must say
 // which. A peer that accepts TCP and never speaks is the deterministic
 // stand-in for a blackholed port: the dial is still in flight when either
@@ -254,14 +277,14 @@ func TestDialCandidateTLS(t *testing.T) {
 	defer cancel()
 
 	// insecure: handshake + alpn ok
-	c := dialCandidateTLS(ctx, ctx, cfg, port, &net.Dialer{}, insecure, noopTransport)
+	c := dialCandidateTLS(ctx, ctx, cfg, port, &net.Dialer{}, insecure, noopTransport, nil)
 	if c.err != nil {
 		t.Fatalf("dialCandidateTLS: %v", c.err)
 	}
 	_ = c.conn.Close()
 
 	// verified: cert is self-signed, must fail
-	c = dialCandidateTLS(ctx, ctx, cfg, port, &net.Dialer{}, &tls.Config{NextProtos: cfg.ALPN}, noopTransport)
+	c = dialCandidateTLS(ctx, ctx, cfg, port, &net.Dialer{}, &tls.Config{NextProtos: cfg.ALPN}, noopTransport, nil)
 	if c.err == nil {
 		t.Fatal("expected certificate verification error")
 	}
@@ -270,7 +293,7 @@ func TestDialCandidateTLS(t *testing.T) {
 	// but the gate closes the candidate - a front that will not say "ssh" is
 	// not an ssh route for this name.
 	port2 := serveAt(t, cert, nil)
-	c = dialCandidateTLS(ctx, ctx, cfg, port2, &net.Dialer{}, insecure, noopTransport)
+	c = dialCandidateTLS(ctx, ctx, cfg, port2, &net.Dialer{}, insecure, noopTransport, nil)
 	if c.err == nil {
 		t.Fatal("a front with no acceptable ALPN must be rejected")
 	}
@@ -288,7 +311,7 @@ func TestDialCandidateTLS(t *testing.T) {
 	// front with no matching route closes the socket instead and the client sees
 	// EOF (the router deliberately suppresses the TLS alert).
 	port3 := serveAt(t, cert, []string{"h2"})
-	c = dialCandidateTLS(ctx, ctx, cfg, port3, &net.Dialer{}, insecure, noopTransport)
+	c = dialCandidateTLS(ctx, ctx, cfg, port3, &net.Dialer{}, insecure, noopTransport, nil)
 	if c.err == nil {
 		t.Fatal("expected handshake error when the front offers only h2")
 	}
@@ -336,8 +359,8 @@ func TestResolvedDefaults(t *testing.T) {
 	if got.SSHPort != 22 || got.TLSPort != 443 {
 		t.Errorf("ports = %d/%d, want 22/443", got.SSHPort, got.TLSPort)
 	}
-	if got.TCPTimeout != defaultTCPTimeout || got.TLSTimeout != defaultTLSTimeout {
-		t.Errorf("clocks = %v/%v, want 5s/45s", got.TCPTimeout, got.TLSTimeout)
+	if got.TCPTimeout != defaultTCPTimeout || got.TLSTimeout != 0 {
+		t.Errorf("clocks = %v/%v, want 5s and auto (0)", got.TCPTimeout, got.TLSTimeout)
 	}
 	if len(got.ALPN) != 1 || got.ALPN[0] != "ssh" {
 		t.Errorf("alpn = %v, want [ssh]", got.ALPN)

@@ -122,7 +122,7 @@ func newFlagSet(cfg *sshtlsproxy.Config, raw *rawFlags) *flag.FlagSet {
 	fs.IntVar(&cfg.TLSPort, "tls-port", 443, "TLS-terminated SSH server port")
 	fs.StringVar(&raw.alpnRaw, "alpn", "ssh", "acceptable ALPN protocols, ex: 'ssh' 'h2,http/1.1'")
 	fs.Float64Var(&raw.tcpTimeoutSec, "tcp-timeout", 0, "TCP connect timeout in seconds (0 = the default, 5)")
-	fs.Float64Var(&raw.tlsTimeoutSec, "tls-timeout", 0, "TLS handshake timeout in seconds (0 = the default, 45)")
+	fs.Float64Var(&raw.tlsTimeoutSec, "tls-timeout", 0, "TLS handshake timeout in seconds (0 = auto: twice the connect time, floor 150ms)")
 	fs.StringVar(&raw.serverName, "servername", "", "SNI / hostname to verify (default: <host>)")
 	fs.BoolVar(&raw.insecure, "k", false, "alias for --insecure")
 	fs.BoolVar(&raw.insecure, "insecure", false, "ignore bad TLS/SSL certificates")
@@ -143,7 +143,7 @@ func newFlagSet(cfg *sshtlsproxy.Config, raw *rawFlags) *flag.FlagSet {
 		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_TLS_PORT     TLS-terminated SSH server port")
 		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_ALPN         acceptable ALPN protocols")
 		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_TCP_TIMEOUT   TCP connect timeout in seconds")
-		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_TLS_TIMEOUT   TLS handshake timeout in seconds")
+		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_TLS_TIMEOUT   TLS handshake timeout in seconds (0 = auto)")
 		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_SERVERNAME   SNI / hostname to verify")
 	}
 
@@ -229,7 +229,7 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 	cfg.Host = host
 
 	if cfg.TCPTimeout < 0 || cfg.TLSTimeout < 0 {
-		fmt.Fprintf(os.Stderr, "%s: --tcp-timeout and --tls-timeout must be 0 (the default) or a positive number of seconds\n", name)
+		fmt.Fprintf(os.Stderr, "%s: --tcp-timeout and --tls-timeout must be 0 (auto) or a positive number of seconds\n", name)
 		return sshtlsproxy.Config{}, nil, false
 	}
 	if cfg.SSHPort <= 0 || cfg.TLSPort <= 0 {

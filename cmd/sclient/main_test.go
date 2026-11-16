@@ -102,7 +102,7 @@ func TestNewSSHConfigDefaults(t *testing.T) {
 		t.Errorf("Host/TLSPort/SSHPort = %s %d %d, want example.com 443 22", cfg.Host, cfg.TLSPort, cfg.SSHPort)
 	}
 	if cfg.TCPTimeout != 0 || cfg.TLSTimeout != 0 {
-		t.Errorf("clocks = %v/%v, want 0/0 (the engine fills in 5s/45s)", cfg.TCPTimeout, cfg.TLSTimeout)
+		t.Errorf("clocks = %v/%v, want 0/0 (the engine: 5s connect, auto handshake)", cfg.TCPTimeout, cfg.TLSTimeout)
 	}
 	if cfg.TLS == nil {
 		t.Fatal("TLS is nil; the caller config must carry the defaults")

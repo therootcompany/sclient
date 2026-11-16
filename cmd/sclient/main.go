@@ -89,7 +89,7 @@ func main() {
 	flag.BoolVar(&ssh, "ssh", false, "SSH mode shorthand for --ssh-port 22; naming --ssh-port does the same thing")
 	flag.IntVar(&sshPort, "ssh-port", 0, "plain-SSH port to probe alongside <remote>: turns on the dual-port SSH probe (TLS port = <remote>:<port>, default 443). 0 = plain TLS tunnel")
 	flag.Float64Var(&tcpTimeoutSec, "tcp-timeout", 0, "seconds for the TCP connect (DNS included). 0 = the default, 5s")
-	flag.Float64Var(&tlsTimeoutSec, "tls-timeout", 0, "seconds for the TLS handshake, measured from the connect. 0 = the default, 45s (a front issuing an ACME certificate is slow)")
+	flag.Float64Var(&tlsTimeoutSec, "tls-timeout", 0, "seconds for the TLS handshake, measured from the connect. 0 = auto: twice that connect (floor 150ms). Name a number for a front that issues a certificate on first use")
 
 	flag.Parse()
 
@@ -314,7 +314,7 @@ func newSSHConfig(host string, tlsPort int, servername string, alpns []string, i
 		TLSPort:    tlsPort,
 		ALPN:       alpns,         // as offered; ssh mode always supplies a list
 		TCPTimeout: clk.connect,   // 0: the engine default 5s
-		TLSTimeout: clk.handshake, // 0: the engine default 45s
+		TLSTimeout: clk.handshake, // 0: auto, twice the connect
 		Silent:     silent,
 		Verbose:    verbose,
 		TLS: &tls.Config{
@@ -330,8 +330,8 @@ func newSSHConfig(host string, tlsPort int, servername string, alpns []string, i
 const defaultSSHPort = 22
 
 // timing is the operator's clock for one probe: the connect deadline and the
-// handshake deadline. Zero means "the engine default"; the ceiling is the two
-// clocks added together, so every dial has a deadline and there is no
+// handshake deadline. Zero means auto - the engine derives the handshake clock
+// from the connect it just made - so every dial has a deadline and there is no
 // unlimited mode.
 type timing struct {
 	connect   time.Duration

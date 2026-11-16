@@ -36,8 +36,11 @@ type Config struct {
 	TLSPort    int
 	ALPN       []string
 	TCPTimeout time.Duration // one TCP connect, DNS included (default 5s)
-	TLSTimeout time.Duration // one TLS handshake, measured from the connect
-	// (default 45s: a front issuing an ACME certificate is slow)
+	// TLSTimeout bounds one TLS handshake, measured from the connect. Zero -
+	// the default - is auto: twice that candidate's own connect time, floored
+	// at 150ms. A number is taken literally, and is for a front known to issue
+	// a certificate on first use.
+	TLSTimeout time.Duration
 	Verbose bool
 	Silent  bool
 	Dialer  *net.Dialer
@@ -159,6 +162,10 @@ type candidate struct {
 	// none of them is the name we asked for: this candidate is a different
 	// server, so it is not usable.
 	mismatch string
+	// declared is true when the banner named any host at all. A declared,
+	// matching banner is proof of identity on its own: the other port is no
+	// longer worth waiting for.
+	declared bool
 }
 
 // dialCandidateTCP dials one plain port. onTransport fires when the
@@ -177,11 +184,15 @@ func dialCandidateTCP(clock context.Context, cfg Config, port int, dialer *net.D
 }
 
 // dialCandidateTLS dials the TLS port: the connect runs on the dial clock, the
-// handshake on its own. An ALPN list is a requirement, not a hint: a front
-// that terminates TLS but will not name a protocol we asked for has no ssh
-// route for this name, so that candidate ends at the handshake. `--alpn ""`
-// (empty, non-nil) turns the gate off for fronts that do not speak ALPN.
-func dialCandidateTLS(ctx, clock context.Context, cfg Config, port int, dialer *net.Dialer, tlsCfg *tls.Config, onTransport func(time.Duration)) *candidate {
+// handshake on its own - auto, it is twice this candidate's connect time.
+// An ALPN list is a requirement, not a hint: a front that terminates TLS but
+// will not name a protocol we asked for has no ssh route for this name, so
+// that candidate ends at the handshake. `--alpn ""` (empty, non-nil) turns the
+// gate off for fronts that do not speak ALPN.
+//
+// decided is closed as soon as another candidate is confirmed; a handshake we
+// no longer need is cut short rather than allowed to run out its clock.
+func dialCandidateTLS(ctx, clock context.Context, cfg Config, port int, dialer *net.Dialer, tlsCfg *tls.Config, onTransport func(time.Duration), decided chan struct{}) *candidate {
 	start := time.Now()
 	c := &candidate{name: "tls", address: net.JoinHostPort(cfg.Host, strconv.Itoa(port))}
 	conn, err := dialer.DialContext(clock, "tcp", c.address)
@@ -191,16 +202,37 @@ func dialCandidateTLS(ctx, clock context.Context, cfg Config, port int, dialer *
 	}
 	// The socket is up: the grace clock arms here, whether the handshake
 	// below fails or the ALPN gate closes the candidate.
-	onTransport(time.Since(start))
-	// The handshake gets its own clock, off the caller's context: a front
-	// issuing an ACME certificate can take tens of seconds, and the sibling
-	// grace that closes a blackholed port must not strangle it.
-	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, cfg.TLSTimeout)
+	connect := time.Since(start)
+	onTransport(connect)
+
+	// The handshake gets its own clock, off the caller's context: the sibling
+	// grace that closes a blackholed port must not strangle it, and a front
+	// that already has a certificate answers in a couple of round trips.
+	handshake := handshakeClock(cfg, connect)
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, handshake)
 	defer cancelHandshake()
+	if decided != nil {
+		go func() {
+			select {
+			case <-decided:
+				cancelHandshake()
+			case <-handshakeCtx.Done():
+			}
+		}()
+	}
 	tconn := tls.Client(conn, tlsCfg)
 	if err := tconn.HandshakeContext(handshakeCtx); err != nil {
 		_ = conn.Close()
-		c.err = dialError(fmt.Errorf("tls %s: %w", conn.RemoteAddr(), err), time.Since(start), clock)
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			c.err = fmt.Errorf("tls %s: timed out after %s: the TLS handshake did not complete",
+				conn.RemoteAddr(), handshake.Round(10*time.Millisecond))
+		case errors.Is(err, context.Canceled) && closed(decided):
+			c.err = fmt.Errorf("tls %s: handshake skipped, the other side is confirmed",
+				conn.RemoteAddr())
+		default:
+			c.err = dialError(fmt.Errorf("tls %s: %w", conn.RemoteAddr(), err), time.Since(start), clock)
+		}
 		return c
 	}
 	proto := tconn.ConnectionState().NegotiatedProtocol
@@ -230,6 +262,20 @@ func (c *candidate) ready(start time.Time, conn net.Conn) {
 // or the grace window - rather than from the caller.
 var errProbeClock = errors.New("probe clock ran out")
 
+// closed reports whether a signal channel has been closed, without consuming
+// anything (a decided channel is closed, never sent to).
+func closed(ch chan struct{}) bool {
+	if ch == nil {
+		return false
+	}
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
 // dialError names the reason a dial never connected: the clock gives a
 // timeout, the caller pulling the plug gives a cancellation.
 func dialError(err error, elapsed time.Duration, clock context.Context) error {
@@ -246,14 +292,42 @@ func dialError(err error, elapsed time.Duration, clock context.Context) error {
 	return err
 }
 
-// The engine defaults: a connect that is not quick is dead; a handshake may
-// be slow because the front is issuing a certificate.
+// The engine clocks. A connect that is not quick is dead. A handshake gets
+// twice the connect that just happened: measured against public fronts the
+// handshake runs 0.5-1.4x the connect, so 2x is roomy without letting the
+// probe turn into a 45s wait. The floor keeps a sub-millisecond loopback
+// connect from strangling a real handshake.
 const (
-	defaultTCPTimeout = 5 * time.Second
-	defaultTLSTimeout = 45 * time.Second
+	defaultTCPTimeout   = 5 * time.Second
+	// A handshake never gets a shorter clock than the grace we give a pending
+	// connect, so a sub-millisecond loopback connect cannot strangle it.
+	minHandshakeClock   = minGrace
+	handshakeMultiplier = 2
 )
 
-// resolved fills in the engine defaults.
+// handshakeClock is the TLS deadline for one candidate. An explicit
+// --tls-timeout wins; zero - the default - is auto: twice this candidate's
+// own connect time, with a floor.
+func handshakeClock(cfg Config, connect time.Duration) time.Duration {
+	if cfg.TLSTimeout > 0 {
+		return cfg.TLSTimeout
+	}
+	return max(handshakeMultiplier*connect, minHandshakeClock)
+}
+
+// bannerWindow is how long a ready candidate may take to answer the banner:
+// a quarter of the connect clock (floor one grace period), never past the
+// ceiling.
+func bannerWindow(cfg Config, deadline time.Time) time.Duration {
+	window := max(2*minGrace, cfg.TCPTimeout/4)
+	if remaining := time.Until(deadline); remaining < window {
+		window = max(minGrace, remaining)
+	}
+	return window
+}
+
+// resolved fills in the engine defaults. TLSTimeout stays 0 when unset: the
+// handshake clock is computed per candidate from its own connect time.
 func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 	if cfg.SSHPort == 0 {
 		cfg.SSHPort = 22
@@ -263,9 +337,6 @@ func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 	}
 	if cfg.TCPTimeout <= 0 {
 		cfg.TCPTimeout = defaultTCPTimeout
-	}
-	if cfg.TLSTimeout <= 0 {
-		cfg.TLSTimeout = defaultTLSTimeout
 	}
 	if cfg.ALPN == nil {
 		cfg.ALPN = []string{"ssh"}
@@ -306,14 +377,12 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 		}
 	}
 
-	// The ceiling is whatever the two clocks add up to, or the caller's own
-	// deadline if that is sooner. One clock drives the connects: it fires at
-	// the TCP timeout, and the grace window shortens it. The cancel carries a
-	// cause so dialError can tell "the clock ran out" from "the caller pulled
-	// the plug". The handshake and the banner exchange get their own clocks;
-	// the caller's own ctx is kept for the session, which the probe clock must
-	// not bound.
-	deadline := time.Now().Add(cfg.TCPTimeout + cfg.TLSTimeout)
+	// The ceiling: the connect clock plus the longest handshake a candidate
+	// can spend, or the caller's own deadline if that is sooner. Every dial
+	// ends on its own clock; this is only the outer bound on the probe. The
+	// caller's ctx is kept for the session, which the probe clock must not
+	// bound.
+	deadline := time.Now().Add(cfg.TCPTimeout + handshakeClock(cfg, cfg.TCPTimeout))
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
 	}
@@ -334,21 +403,42 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 		clientDone <- clientResult{banner, err}
 	}()
 
-	// dial both ports at once
+	// Each candidate runs its own dial -> handshake -> banner pipeline on its
+	// own clocks. Nothing waits for the other port past its own deadline.
 	res := make(chan *candidate, 2)
 	up := make(chan time.Duration, 2)
+
+	// decided is closed the moment a candidate is confirmed; a handshake still
+	// in flight watches it and stops.
+	decided := make(chan struct{})
+	var decideOnce sync.Once
+	decide := func() { decideOnce.Do(func() { close(decided) }) }
+
+	var clientBanner string
+	var clientErr error
+	var bannerOnce sync.Once
+	clientBannerOf := func() (string, error) {
+		bannerOnce.Do(func() {
+			clientBanner, clientErr = takeClientResult(clientDone, clock)
+		})
+		return clientBanner, clientErr
+	}
+
 	go func() {
-		res <- dialCandidateTCP(clock, cfg, cfg.SSHPort, dialer, func(el time.Duration) { up <- el })
+		c := dialCandidateTCP(clock, cfg, cfg.SSHPort, dialer, func(el time.Duration) { up <- el })
+		res <- exchangeBanner(ctx, cfg, c, clientBannerOf, deadline, decided, debugf)
 	}()
 	go func() {
-		res <- dialCandidateTLS(ctx, clock, cfg, cfg.TLSPort, dialer, tlsCfg, func(el time.Duration) { up <- el })
+		c := dialCandidateTLS(ctx, clock, cfg, cfg.TLSPort, dialer, tlsCfg, func(el time.Duration) { up <- el }, decided)
+		res <- exchangeBanner(ctx, cfg, c, clientBannerOf, deadline, decided, debugf)
 	}()
 
 	ready := make([]*candidate, 0, 2)
 	failed := make([]*candidate, 0, 2)
+	var chosen *candidate
 	graceArmed := false
 	settled := 0
-	for settled < 2 {
+	for settled < 2 && chosen == nil {
 		select {
 		// Arming the grace on transport-up - not on a ready candidate - is
 		// what keeps a blackholed sibling from holding the probe to the
@@ -370,12 +460,31 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 				continue
 			}
 			ready = append(ready, c)
-			debugf("dial: %s %s ready in %v", c.name, c.address, c.elapsed)
+			// A usable TLS candidate wins outright. A plain banner that
+			// declares the name we asked for is proof of identity on its own:
+			// take it, and stop the handshake we no longer need. An undeclared
+			// banner proves nothing, so the TLS side keeps its chance.
+			if c.usable() && (c.name == "tls" || c.declared) {
+				chosen = c
+				decide()
+			}
 		}
 	}
 
-	clientBanner, clientErr := takeClientResult(clientDone, clock)
 	timer.Stop() // the dial clock is done; the session is not probe-bounded
+	if chosen != nil {
+		// Cut off any dial still in flight and close whatever it returns.
+		cancelClock(errProbeClock)
+		for settled < 2 {
+			c := <-res
+			settled++
+			if c.conn != nil {
+				_ = c.conn.Close()
+			}
+			debugf("dial: %s %s: %v", c.name, c.address, c.err)
+		}
+	}
+
 	if clientErr != nil {
 		for _, c := range ready {
 			_ = c.conn.Close()
@@ -386,33 +495,10 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 		}
 		return clientErr
 	}
-	debugf("banner: client %q", clientBanner)
 
-	if len(ready) == 0 {
-		failNoServer(cfg, nil, failed, errOut)
-		closeOut(out)
-		return ErrNoServer
+	if chosen == nil {
+		chosen = pickCandidate(ready)
 	}
-
-	// The banner exchange gets its own clock. The dial clock is already spent
-	// when the grace closed a blackholed sibling, and reusing it would cut off
-	// a ready candidate before its banner is even sent. The window is the
-	// smaller of a quarter of the connect clock (floor 300ms) and what is left
-	// of the ceiling, never less than one grace period - otherwise a candidate
-	// that connected late gets no chance to answer at all.
-	bannerWindow := max(2*minGrace, cfg.TCPTimeout/4)
-	if remaining := time.Until(deadline); remaining < bannerWindow {
-		bannerWindow = max(minGrace, remaining)
-	}
-	bannerDeadline := time.Now().Add(bannerWindow)
-	bannerClock, cancelBanner := context.WithDeadline(ctx, bannerDeadline)
-	defer cancelBanner()
-	debugf("banner: exchange window %v", bannerWindow)
-
-	// banner exchange with the same grace rule as the dials
-	exchangeBanners(bannerClock, bannerDeadline, ready, clientBanner, cfg.ServerName, debugf)
-
-	chosen := pickCandidate(ready)
 	if chosen == nil {
 		for _, c := range ready {
 			_ = c.conn.Close()
@@ -433,6 +519,34 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	// the session is bounded by the caller's ctx, not the probe clock
 	splice(ctx, chosen, clientIn, out)
 	return nil
+}
+
+// exchangeBanner finishes one candidate: it has a socket, so write the
+// client's banner, read the reply, and apply the host gate. The candidate
+// comes back usable, refused (its banner names a different server), or failed.
+// Each candidate runs this on its own clock, so one slow peer cannot hold the
+// probe for another.
+func exchangeBanner(ctx context.Context, cfg Config, c *candidate, clientBannerOf func() (string, error), deadline time.Time, decided chan struct{}, debugf func(string, ...any)) *candidate {
+	if c.err == nil && closed(decided) {
+		c.err = fmt.Errorf("%s %s: not needed, the other side is confirmed", c.name, c.address)
+		_ = c.conn.Close()
+	}
+	if c.err != nil {
+		return c
+	}
+	banner, err := clientBannerOf()
+	if err != nil {
+		_ = c.conn.Close()
+		c.bannerErr = err
+		return c
+	}
+	window := bannerWindow(cfg, deadline)
+	bannerDeadline := time.Now().Add(window)
+	bannerClock, cancelBanner := context.WithDeadline(ctx, bannerDeadline)
+	defer cancelBanner()
+	debugf("banner: %s %s window %v", c.name, c.address, window)
+	exchangeBanners(bannerClock, bannerDeadline, []*candidate{c}, banner, cfg.ServerName, debugf)
+	return c
 }
 
 type clientResult struct {
@@ -513,6 +627,8 @@ func exchangeBanners(ctx context.Context, probeDeadline time.Time, ready []*cand
 			banner, err := readBanner(c.r)
 			c.banner, c.bannerErr = banner, err
 			if err == nil {
+				hosts := declaredHosts(banner)
+				c.declared = len(hosts) > 0
 				c.mismatch = bannerMismatch(want, banner)
 			}
 			bch <- c

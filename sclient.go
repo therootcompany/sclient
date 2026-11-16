@@ -28,30 +28,36 @@ type Tunnel struct {
 	// TCPTimeout bounds one TCP connect, DNS included. Zero takes the default.
 	TCPTimeout time.Duration
 	// TLSTimeout bounds one TLS handshake, measured from the moment the socket
-	// connects. A front issuing an ACME certificate on first use can take tens
-	// of seconds, so the default is generous.
+	// connects. Zero - the default - is auto: twice that connect, floored at
+	// 150ms. Name it only for a front that issues a certificate on first use.
 	TLSTimeout time.Duration
 }
 
-// The engine defaults: a connect that is not quick is dead; a handshake may
-// be slow because the front is issuing a certificate.
+// The engine clocks: a connect that is not quick is dead; a handshake gets
+// twice the connect that just happened (measured 0.5-1.4x on public fronts).
 const (
-	defaultTCPTimeout = 5 * time.Second
-	defaultTLSTimeout = 45 * time.Second
+	defaultTCPTimeout   = 5 * time.Second
+	minHandshakeClock   = 150 * time.Millisecond
+	handshakeMultiplier = 2
 )
 
-// timeouts resolves the operator's clocks. The ceiling is the two clocks
-// added together, so every dial has a deadline and there is no unlimited mode.
-func (t *Tunnel) timeouts() (connect, handshake, ceiling time.Duration) {
-	connect = t.TCPTimeout
-	if connect <= 0 {
-		connect = defaultTCPTimeout
+// connectClock is the TCP deadline: the operator's clock, or the default.
+func (t *Tunnel) connectClock() time.Duration {
+	if t.TCPTimeout > 0 {
+		return t.TCPTimeout
 	}
-	handshake = t.TLSTimeout
-	if handshake <= 0 {
-		handshake = defaultTLSTimeout
+	return defaultTCPTimeout
+}
+
+// handshakeClock bounds one TLS handshake. An explicit --tls-timeout wins;
+// zero is auto - twice the connect that just happened, with a floor so a
+// sub-millisecond loopback connect does not strangle a real handshake. There
+// is no unlimited mode: every dial has a deadline.
+func (t *Tunnel) handshakeClock(connect time.Duration) time.Duration {
+	if t.TLSTimeout > 0 {
+		return t.TLSTimeout
 	}
-	return connect, handshake, connect + handshake
+	return max(handshakeMultiplier*connect, minHandshakeClock)
 }
 
 // sshPrefix is the opening of the RFC 4253 section 4.2 identification
@@ -114,15 +120,16 @@ func (t *Tunnel) dialTLS(remote string, alpn []string) (*tls.Conn, error) {
 		return nil, fmt.Errorf("remote %q: %w", remote, err)
 	}
 	cfg := t.tlsConfig(host, alpn)
-	connect, handshake, ceiling := t.timeouts()
-	ctx, cancel := context.WithTimeout(context.Background(), ceiling)
+	connect := t.connectClock()
+	ctx, cancel := context.WithTimeout(context.Background(), connect+t.handshakeClock(connect))
 	defer cancel()
 	d := &net.Dialer{Timeout: connect, KeepAlive: 30 * time.Second}
+	start := time.Now()
 	conn, err := d.DialContext(ctx, "tcp", remote)
 	if err != nil {
 		return nil, err
 	}
-	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, handshake)
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, t.handshakeClock(time.Since(start)))
 	defer cancelHandshake()
 	tc := tls.Client(conn, cfg)
 	if err := tc.HandshakeContext(handshakeCtx); err != nil {

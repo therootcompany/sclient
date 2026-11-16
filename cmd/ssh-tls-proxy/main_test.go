@@ -68,15 +68,16 @@ func TestParseArgsAlpnList(t *testing.T) {
 	}
 }
 
-// Zero is "the default", not "no limit": the engine fills in 5s and 45s. A
-// negative clock is a usage error, and the env fills in only unset flags.
+// Zero is "auto", not "no limit": the engine fills in a 5s connect and derives
+// the handshake clock from it. A negative clock is a usage error, and the env
+// fills in only unset flags.
 func TestParseArgsClocks(t *testing.T) {
 	cfg, _, ok := parseArgs([]string{"example.com"})
 	if !ok {
 		t.Fatal("parseArgs rejected a bare host")
 	}
 	if cfg.TCPTimeout != 0 || cfg.TLSTimeout != 0 {
-		t.Errorf("clocks = %v/%v, want 0/0 (the engine fills in 5s/45s)", cfg.TCPTimeout, cfg.TLSTimeout)
+		t.Errorf("clocks = %v/%v, want 0/0 (the engine: 5s connect, auto handshake)", cfg.TCPTimeout, cfg.TLSTimeout)
 	}
 
 	cfg, _, ok = parseArgs([]string{"--tcp-timeout", "2", "--tls-timeout", "30", "example.com"})
