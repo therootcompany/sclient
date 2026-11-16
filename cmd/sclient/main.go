@@ -226,7 +226,16 @@ func runSSH(ctx context.Context, remotestr, localstr, servername string, alpns [
 	cfg := newSSHConfig(host, tlsPort, servername, alpns, insecure, silent, sshPort, timeoutSec)
 
 	if localstr == "-" || localstr == "|" {
-		exitSSH(cfg.Host, sshtlsproxy.Probe(ctx, cfg, os.Stdin, os.Stdout, os.Stderr))
+		err := sshtlsproxy.Probe(ctx, cfg, os.Stdin, os.Stdout, os.Stderr)
+		switch {
+		case err == nil: // 0: session done
+			os.Exit(0)
+		case errors.Is(err, sshtlsproxy.ErrNoServer): // 255: ssh convention
+			os.Exit(255)
+		default: // 1: client-side failure
+			_, _ = fmt.Fprintf(os.Stderr, "sclient: %s: %s\n", cfg.Host, err)
+			os.Exit(1)
+		}
 	}
 
 	lhost, lport, err := localAddr(localstr)
@@ -295,17 +304,4 @@ func sshALPN(raw string, explicit bool) []string {
 		return []string{"ssh"}
 	}
 	return a
-}
-
-// exitSSH: 0 done, 255 no usable server (ssh convention), 1 client-side failure.
-func exitSSH(host string, err error) {
-	switch {
-	case nil == err:
-		os.Exit(0)
-	case errors.Is(err, sshtlsproxy.ErrNoServer):
-		os.Exit(255)
-	default:
-		fmt.Fprintf(os.Stderr, "sclient: %s: %s\n", host, err)
-		os.Exit(1)
-	}
 }

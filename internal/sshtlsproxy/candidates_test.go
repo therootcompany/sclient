@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"io"
 	"math/big"
 	"net"
 	"strconv"
@@ -96,13 +97,13 @@ func probeLoopbackTLS() bool {
 	return true
 }
 
-// The probe clock is the only cancel inside dialCandidate, so "operation was
+// The probe clock is the only cancel inside a dial, so "operation was
 // canceled" must read as a timeout with the elapsed time.
 func TestDialCandidateClockWording(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 0)
 	defer cancel()
 	cfg := Config{Host: "192.0.2.1", Timeout: 3 * time.Second}
-	c := dialCandidate(ctx, cfg, 22, "ssh", &net.Dialer{}, nil, noopTransport)
+	c := dialCandidateTCP(ctx, cfg, 22, &net.Dialer{}, noopTransport)
 	if c.err == nil {
 		t.Fatal("an expired context must not produce a candidate")
 	}
@@ -119,12 +120,57 @@ func TestDialCandidateRefusedPort(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	cfg := Config{Host: "127.0.0.1", Timeout: 2 * time.Second}
-	c := dialCandidate(ctx, cfg, 1, "ssh", &net.Dialer{}, nil, noopTransport)
+	c := dialCandidateTCP(ctx, cfg, 1, &net.Dialer{}, noopTransport)
 	if c.err == nil {
 		t.Fatal("expected a refused-port error")
 	}
 	if strings.Contains(c.err.Error(), "timed out") {
 		t.Errorf("a refused port must not be reported as a Timeout: %v", c.err)
+	}
+}
+
+// The clock and the caller are different cancels and the report must say
+// which. A peer that accepts TCP and never speaks is the deterministic
+// stand-in for a blackholed port: the dial is still in flight when either
+// cancel fires.
+func TestProbeWordingClockVsCaller(t *testing.T) {
+	host, portStr, err := net.SplitHostPort(startSilentServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	probe := func(ctx context.Context, timeout time.Duration) string {
+		in, w := io.Pipe()
+		defer w.Close()
+		go func() { _, _ = w.Write([]byte("SSH-2.0-test-client\r\n")) }()
+		var diag strings.Builder
+		_ = Probe(ctx, Config{Host: host, SSHPort: port, TLSPort: port, Timeout: timeout}, in, io.Discard, &diag)
+		return diag.String()
+	}
+
+	diag := probe(t.Context(), 300*time.Millisecond)
+	if !strings.Contains(diag, "timed out after") {
+		t.Errorf("the clock should read as a timeout: %s", diag)
+	}
+	if strings.Contains(diag, "canceled") {
+		t.Errorf("the clock must not read as a cancellation: %s", diag)
+	}
+
+	// cancel inside the grace window, so the caller - not the clock - is the
+	// one that ends the dial
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	diag = probe(ctx, 10*time.Second)
+	if !strings.Contains(diag, "canceled after") {
+		t.Errorf("a caller cancel should read as canceled: %s", diag)
 	}
 }
 
@@ -157,9 +203,9 @@ func TestDialCandidatePlain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 
-	c := dialCandidate(ctx, cfg, port, "ssh", &net.Dialer{}, nil, noopTransport)
+	c := dialCandidateTCP(ctx, cfg, port, &net.Dialer{}, noopTransport)
 	if c.err != nil {
-		t.Fatalf("dialCandidate: %v", c.err)
+		t.Fatalf("dialCandidateTCP: %v", c.err)
 	}
 	if c.conn == nil {
 		t.Fatal("no conn")
@@ -167,7 +213,7 @@ func TestDialCandidatePlain(t *testing.T) {
 	_ = c.conn.Close()
 
 	// Refused port.
-	c = dialCandidate(ctx, cfg, 1, "ssh", &net.Dialer{}, nil, noopTransport)
+	c = dialCandidateTCP(ctx, cfg, 1, &net.Dialer{}, noopTransport)
 	if c.err == nil {
 		t.Fatal("expected dial error on refused port")
 	}
@@ -207,14 +253,14 @@ func TestDialCandidateTLS(t *testing.T) {
 	defer cancel()
 
 	// insecure: handshake + alpn ok
-	c := dialCandidate(ctx, cfg, port, "tls", &net.Dialer{}, insecure, noopTransport)
+	c := dialCandidateTLS(ctx, cfg, port, &net.Dialer{}, insecure, noopTransport)
 	if c.err != nil {
-		t.Fatalf("dialCandidate(tls, insecure): %v", c.err)
+		t.Fatalf("dialCandidateTLS: %v", c.err)
 	}
 	_ = c.conn.Close()
 
 	// verified: cert is self-signed, must fail
-	c = dialCandidate(ctx, cfg, port, "tls", &net.Dialer{}, &tls.Config{NextProtos: cfg.ALPN}, noopTransport)
+	c = dialCandidateTLS(ctx, cfg, port, &net.Dialer{}, &tls.Config{NextProtos: cfg.ALPN}, noopTransport)
 	if c.err == nil {
 		t.Fatal("expected certificate verification error")
 	}
@@ -224,7 +270,7 @@ func TestDialCandidateTLS(t *testing.T) {
 	// kept — the banner is still worth sending — and the note is
 	// carried for the failure report.
 	port2 := serveAt(t, cert, nil)
-	c = dialCandidate(ctx, cfg, port2, "tls", &net.Dialer{}, insecure, noopTransport)
+	c = dialCandidateTLS(ctx, cfg, port2, &net.Dialer{}, insecure, noopTransport)
 	if c.err != nil {
 		t.Fatalf("a no-ALPN front must not be rejected outright: %v", c.err)
 	}
@@ -243,7 +289,7 @@ func TestDialCandidateTLS(t *testing.T) {
 	// front with no matching route closes the socket instead and the client sees
 	// EOF (the router deliberately suppresses the TLS alert).
 	port3 := serveAt(t, cert, []string{"h2"})
-	c = dialCandidate(ctx, cfg, port3, "tls", &net.Dialer{}, insecure, noopTransport)
+	c = dialCandidateTLS(ctx, cfg, port3, &net.Dialer{}, insecure, noopTransport)
 	if c.err == nil {
 		t.Fatal("expected handshake error when the front offers only h2")
 	}

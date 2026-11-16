@@ -30,6 +30,19 @@ out=$(ssh $SSH_OPTS \
 code=$?
 [ "$code" = 255 ] || note "via ssh: exit=$code, want 255"
 
+# 1c. ControlPersist nulls a ProxyCommand's stderr. With a pty the report
+# must still reach the terminal through /dev/tty (Stderr()'s repair). Skipped
+# when `script` is unavailable (no pty to allocate).
+if command -v script >/dev/null 2>&1; then
+  out=$(script -q /dev/null sh -c \
+    'ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlPath=./agents/tmp/e2e-ctl -o ControlPersist=10s -o "ProxyCommand=./bin/ssh-tls-proxy --timeout 1 192.0.2.1" 192.0.2.1 true' 2>&1)
+  case "$out" in
+    *"no usable server"*) ;;
+    *) note "ControlPersist: report did not reach the tty: $out" ;;
+  esac
+  rm -f ./agents/tmp/e2e-ctl
+fi
+
 # 2. version + usage
 ./bin/ssh-tls-proxy -V | grep -q ssh-tls-proxy || note "-V does not print the name"
 ./bin/ssh-tls-proxy help | grep -q 'ProxyCommand' || note "help lacks the ssh_config example"

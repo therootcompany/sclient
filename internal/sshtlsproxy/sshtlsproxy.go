@@ -101,66 +101,77 @@ type candidate struct {
 	alpnNote string
 }
 
-// dialCandidate dials one port. onTransport fires when the transport is
-// up (TCP connected; for TLS, handshake done) - the grace clock arms on
-// that event, so a blackholed sibling port cannot hold the probe to the
-// full timeout. A nil tlsCfg means the plain-SSH candidate.
-func dialCandidate(ctx context.Context, cfg Config, port int, kind string, dialer *net.Dialer, tlsCfg *tls.Config, onTransport func(time.Duration)) *candidate {
+// dialCandidateTCP dials one plain port. onTransport fires when the
+// transport is up - the grace clock arms on that event, so a blackholed
+// sibling port cannot hold the probe to the full timeout.
+func dialCandidateTCP(clock context.Context, cfg Config, port int, dialer *net.Dialer, onTransport func(time.Duration)) *candidate {
 	start := time.Now()
-	c := &candidate{name: kind, address: net.JoinHostPort(cfg.Host, strconv.Itoa(port))}
-	conn, err := dialer.DialContext(ctx, "tcp", c.address)
-	if err == nil && tlsCfg != nil {
-		conn, err = tlsHandshake(ctx, conn, tlsCfg)
-	}
-	if err == nil {
-		onTransport(time.Since(start))
-		if tlsCfg != nil {
-			tlsConn := conn.(*tls.Conn)
-			p := tlsConn.ConnectionState().NegotiatedProtocol
-			if len(cfg.ALPN) > 0 && !slices.Contains(cfg.ALPN, p) {
-				// ALPN is a routing hint on this fleet, not a security
-				// property: a front that terminates without it may still
-				// forward to sshd, so the banner is sent anyway and the
-				// note is reported only if it is not answered.
-				negotiated := "(none)"
-				if p != "" {
-					negotiated = strconv.Quote(p)
-				}
-				c.alpnNote = fmt.Sprintf("TLS negotiated ALPN %s, required one of [%s]",
-					negotiated, strings.Join(cfg.ALPN, ", "))
-			}
-		}
-	}
+	c := &candidate{name: "ssh", address: net.JoinHostPort(cfg.Host, strconv.Itoa(port))}
+	conn, err := dialer.DialContext(clock, "tcp", c.address)
 	if err != nil {
-		c.err = dialError(err, time.Since(start))
-	} else {
-		c.conn = conn
-		c.r = bufio.NewReaderSize(conn, 32*1024)
+		c.err = dialError(err, time.Since(start), clock)
+		return c
 	}
-	c.elapsed = time.Since(start)
+	c.ready(start, conn, onTransport)
 	return c
 }
 
-// dialError names the reason a dial never connected: the probe clock gives a
-// timeout, an explicit cancel from the caller gives a cancellation.
-func dialError(err error, elapsed time.Duration) error {
+// dialCandidateTLS dials the TLS port and handshakes under the same clock.
+// ALPN is a routing hint on this fleet, not a security property: a front
+// that terminates without the required ALPN is still tried - the banner is
+// sent anyway and the note is reported only if it is not answered.
+func dialCandidateTLS(clock context.Context, cfg Config, port int, dialer *net.Dialer, tlsCfg *tls.Config, onTransport func(time.Duration)) *candidate {
+	start := time.Now()
+	c := &candidate{name: "tls", address: net.JoinHostPort(cfg.Host, strconv.Itoa(port))}
+	conn, err := dialer.DialContext(clock, "tcp", c.address)
+	if err != nil {
+		c.err = dialError(err, time.Since(start), clock)
+		return c
+	}
+	tconn := tls.Client(conn, tlsCfg)
+	if err := tconn.HandshakeContext(clock); err != nil {
+		_ = conn.Close()
+		c.err = dialError(fmt.Errorf("tls %s: %w", conn.RemoteAddr(), err), time.Since(start), clock)
+		return c
+	}
+	if p := tconn.ConnectionState().NegotiatedProtocol; len(cfg.ALPN) > 0 && !slices.Contains(cfg.ALPN, p) {
+		negotiated := "(none)"
+		if p != "" {
+			negotiated = strconv.Quote(p)
+		}
+		c.alpnNote = fmt.Sprintf("TLS negotiated ALPN %s, required one of [%s]",
+			negotiated, strings.Join(cfg.ALPN, ", "))
+	}
+	c.ready(start, tconn, onTransport)
+	return c
+}
+
+// ready marks a candidate as usable: transport up, reader armed, clock told.
+func (c *candidate) ready(start time.Time, conn net.Conn, onTransport func(time.Duration)) {
+	c.conn = conn
+	c.r = bufio.NewReaderSize(conn, 32*1024)
+	c.elapsed = time.Since(start)
+	onTransport(c.elapsed)
+}
+
+// errProbeClock marks a cancel that came from the probe clock - the timeout
+// or the grace window - rather than from the caller.
+var errProbeClock = errors.New("probe clock ran out")
+
+// dialError names the reason a dial never connected: the clock gives a
+// timeout, the caller pulling the plug gives a cancellation.
+func dialError(err error, elapsed time.Duration, clock context.Context) error {
+	timeout := fmt.Errorf("timed out after %s", elapsed.Round(10*time.Millisecond))
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("timed out after %s", elapsed.Round(10*time.Millisecond))
+		return timeout
 	case errors.Is(err, context.Canceled):
+		if errors.Is(context.Cause(clock), errProbeClock) {
+			return timeout
+		}
 		return fmt.Errorf("canceled after %s", elapsed.Round(10*time.Millisecond))
 	}
 	return err
-}
-
-// tlsHandshake completes the handshake; ALPN policy is the caller's job.
-func tlsHandshake(ctx context.Context, conn net.Conn, tlsCfg *tls.Config) (*tls.Conn, error) {
-	tlsConn := tls.Client(conn, tlsCfg)
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("tls %s: %w", conn.RemoteAddr(), err)
-	}
-	return tlsConn, nil
 }
 
 // resolved fills in the engine defaults.
@@ -210,12 +221,17 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 		}
 	}
 
-	// One clock for the probe: the caller's deadline, capped by cfg.Timeout
-	// and shortened by the grace window. The caller's own ctx is kept for the
-	// session, which the probe clock must not bound.
-	clock, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
-	timer := time.AfterFunc(cfg.Timeout, cancel)
+	// One clock for the probe: the caller's deadline, capped by cfg.Timeout and
+	// shortened by the grace window. The cancel carries a cause so dialError can
+	// tell "the clock ran out" from "the caller pulled the plug". The caller's
+	// own ctx is kept for the session, which the probe clock must not bound.
+	deadline := time.Now().Add(cfg.Timeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	clock, cancelClock := context.WithCancelCause(ctx)
+	defer cancelClock(nil)
+	timer := time.AfterFunc(cfg.Timeout, func() { cancelClock(errProbeClock) })
 
 	// Intercepting exactly one client line is safe: the client waits for
 	// the server banner before sending anything else (RFC 4253 4.2).
@@ -230,10 +246,10 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	res := make(chan *candidate, 2)
 	up := make(chan time.Duration, 2)
 	go func() {
-		res <- dialCandidate(clock, cfg, cfg.SSHPort, "ssh", dialer, nil, func(el time.Duration) { up <- el })
+		res <- dialCandidateTCP(clock, cfg, cfg.SSHPort, dialer, func(el time.Duration) { up <- el })
 	}()
 	go func() {
-		res <- dialCandidate(clock, cfg, cfg.TLSPort, "tls", dialer, tlsCfg, func(el time.Duration) { up <- el })
+		res <- dialCandidateTLS(clock, cfg, cfg.TLSPort, dialer, tlsCfg, func(el time.Duration) { up <- el })
 	}()
 
 	ready := make([]*candidate, 0, 2)
@@ -249,8 +265,8 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 			if !graceArmed {
 				graceArmed = true
 				d := time.Now().Add(graceFor(el))
-				if dl, ok := clock.Deadline(); ok && d.After(dl) {
-					d = dl
+				if d.After(deadline) {
+					d = deadline
 				}
 				_ = timer.Reset(time.Until(d))
 			}
@@ -290,7 +306,7 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	}
 
 	// banner exchange with the same grace rule as the dials
-	exchangeBanners(clock, ready, clientBanner, debugf)
+	exchangeBanners(clock, deadline, ready, clientBanner, debugf)
 
 	chosen := pickCandidate(ready)
 	if chosen == nil {
@@ -366,12 +382,8 @@ func pickCandidate(ready []*candidate) *candidate {
 // each server banner. Every candidate sends exactly once, so the drain
 // below cannot block: the clock (or the caller) cancels ctx, which closes
 // the outstanding conns and makes every read return.
-func exchangeBanners(ctx context.Context, ready []*candidate, clientBanner string, debugf func(string, ...any)) {
+func exchangeBanners(ctx context.Context, probeDeadline time.Time, ready []*candidate, clientBanner string, debugf func(string, ...any)) {
 	sent := time.Now()
-	probeDeadline, ok := ctx.Deadline()
-	if !ok {
-		probeDeadline = sent.Add(time.Minute) // defensive: Probe always passes a clock
-	}
 	bch := make(chan *candidate, len(ready))
 	for _, c := range ready {
 		_ = c.conn.SetReadDeadline(probeDeadline)
