@@ -488,15 +488,22 @@ func pickCandidate(ready []*candidate) *candidate {
 	return nil
 }
 
+// bannerReadMargin sits inside the exchange window: the read deadline is the
+// window minus this, so a peer that never answers times out on the read (the
+// report says "read banner: i/o timeout") instead of losing the race with the
+// close that ends the window ("use of closed network connection").
+const bannerReadMargin = 20 * time.Millisecond
+
 // exchangeBanners writes the client banner to every candidate and reads
 // each server banner. Every candidate sends exactly once, so the drain
 // below cannot block: the clock (or the caller) cancels ctx, which closes
 // the outstanding conns and makes every read return.
 func exchangeBanners(ctx context.Context, probeDeadline time.Time, ready []*candidate, clientBanner, want string, debugf func(string, ...any)) {
+	readDeadline := probeDeadline.Add(-bannerReadMargin)
 	sent := time.Now()
 	bch := make(chan *candidate, len(ready))
 	for _, c := range ready {
-		_ = c.conn.SetReadDeadline(probeDeadline)
+		_ = c.conn.SetReadDeadline(readDeadline)
 		go func(c *candidate) {
 			if err := writeBanner(c.conn, clientBanner); err != nil {
 				c.bannerErr = err
@@ -530,8 +537,8 @@ func exchangeBanners(ctx context.Context, probeDeadline time.Time, ready []*cand
 			if !firstOK {
 				firstOK = true
 				d := time.Now().Add(graceFor(time.Since(sent)))
-				if d.After(probeDeadline) {
-					d = probeDeadline
+				if d.After(readDeadline) {
+					d = readDeadline
 				}
 				for _, o := range remaining {
 					_ = o.conn.SetReadDeadline(d)
