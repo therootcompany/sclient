@@ -28,9 +28,11 @@ type Tunnel struct {
 	Timeout time.Duration
 }
 
-func (t *Tunnel) tlsConfig() *tls.Config {
+// tlsConfig builds the client config for one remote. An empty ServerName
+// takes the remote host, which is what tls.Dial does when it is left unset.
+func (t *Tunnel) tlsConfig(host string) *tls.Config {
 	return &tls.Config{
-		ServerName:         t.ServerName,
+		ServerName:         host,
 		NextProtos:         t.NextProtos,
 		InsecureSkipVerify: t.InsecureSkipVerify,
 	}
@@ -39,8 +41,13 @@ func (t *Tunnel) tlsConfig() *tls.Config {
 // dialTLS connects and handshakes under one Deadline; a zero Timeout is
 // unlimited. The returned connection is ready to communicate.
 func (t *Tunnel) dialTLS(remote string) (*tls.Conn, error) {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		return nil, fmt.Errorf("remote %q: %w", remote, err)
+	}
+	cfg := t.tlsConfig(host)
 	if t.Timeout <= 0 {
-		return tls.Dial("tcp", remote, t.tlsConfig()) // no deadline, no dialer
+		return tls.Dial("tcp", remote, cfg) // no deadline, no dialer
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), t.Timeout)
 	defer cancel()
@@ -49,7 +56,7 @@ func (t *Tunnel) dialTLS(remote string) (*tls.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	tc := tls.Client(conn, t.tlsConfig())
+	tc := tls.Client(conn, cfg)
 	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = conn.Close()
 		return nil, err

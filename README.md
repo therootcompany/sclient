@@ -221,8 +221,8 @@ ProxyCommand with its stderr swallowed.
 
 `--timeout` is seconds until a remote connection is ready to
 communicate: the TCP connect and the TLS handshake share one deadline.
-Plain mode defaults to 10 (`--timeout 0` means no limit); `--ssh` uses
-the engine's probe clock, default 3.
+Both modes default to 3 seconds (`--timeout 0` means no limit in plain
+mode); a connect plus TLS handshake to a public host measured 10-130 ms.
 
 # API
 

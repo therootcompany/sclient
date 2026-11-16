@@ -11,6 +11,7 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -93,6 +94,23 @@ func TestDialTLSStalledHandshake(t *testing.T) {
 	}
 	if el := time.Since(start); el < 250*time.Millisecond || el > 2*time.Second {
 		t.Fatalf("took %v, want ~300ms", el)
+	}
+}
+
+// An empty ServerName is taken from the remote address: plain mode must
+// verify the certificate, not fail on an incomplete config.
+func TestDialTLSDefaultsServerName(t *testing.T) {
+	remote := readyTLS(t)
+	tun := &Tunnel{Timeout: 2 * time.Second} // no ServerName, no InsecureSkipVerify
+	_, err := tun.dialTLS(remote)
+	if err == nil {
+		t.Fatal("a self-signed certificate must fail verification")
+	}
+	if strings.Contains(err.Error(), "ServerName or InsecureSkipVerify") {
+		t.Fatalf("ServerName was not taken from the remote: %v", err)
+	}
+	if !strings.Contains(err.Error(), "certificate") {
+		t.Fatalf("err = %v, want a certificate error", err)
 	}
 }
 

@@ -53,7 +53,7 @@ func TestPlainTimeout(t *testing.T) {
 		explicit bool
 		want     float64
 	}{
-		{"unset takes the default", 0, false, 10},
+		{"unset takes the default", 0, false, 3},
 		{"explicit zero means no limit", 0, true, 0},
 		{"explicit value wins", 2.5, true, 2.5},
 	}

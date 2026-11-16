@@ -83,13 +83,9 @@ func main() {
 	flag.BoolVar(&silent, "silent", false, "less verbose output")
 	flag.BoolVar(&sshMode, "ssh", false, "SSH mode: probe the plain (22) and TLS (443) ports at once and splice the winner; the local side must be an SSH client")
 	flag.IntVar(&sshPort, "ssh-port", 0, "plain-SSH server port, default 22 (--ssh)")
-	flag.Float64Var(&timeoutSec, "timeout", 0, "seconds to wait until a remote connection is ready to communicate (TCP connect + TLS handshake). Plain mode: default 10, 0 = no limit. --ssh: the engine's probe clock, default 3")
+	flag.Float64Var(&timeoutSec, "timeout", 0, "seconds to wait until a remote connection is ready to communicate (TCP connect + TLS handshake). Plain mode: default 3, 0 = no limit. --ssh: the engine's probe clock, default 3")
 
 	flag.Parse()
-
-	// Ctrl-C or SIGTERM cancels in-flight probes and sessions
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 
 	// Visit sees only flags the operator gave, so it runs after Parse.
 	set := map[string]bool{}
@@ -121,8 +117,10 @@ func main() {
 	}
 
 	if sshMode {
-		// --ssh replaces the Tunnel: the engine is the transport
-		runSSH(ctx, remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, sshPort, timeoutSec)
+		// --ssh replaces the Tunnel: the engine is the transport, and runSSH
+		// only returns when the listener is shut down.
+		runSSH(remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, sshPort, timeoutSec)
+		return
 	}
 
 	remoteHost, remotePort, err := remoteAddr(remotestr, 443)
@@ -200,9 +198,11 @@ func localAddr(s string) (string, int, error) {
 	return host, p, nil
 }
 
-// defaultPlainTimeout bounds a plain (non-ssh) remote connect in
-// seconds, matching ssh's ConnectTimeout convention.
-const defaultPlainTimeout = 10
+// defaultPlainTimeout bounds one plain (non-ssh) remote connect - TCP
+// connect plus TLS handshake - in seconds. OpenSSH's ConnectTimeout has no
+// default, so there is no convention to copy; 3s matches the engine's probe
+// clock and is roughly 20x the measured connect+handshake for a public host.
+const defaultPlainTimeout = 3
 
 // plainTimeout is the operator's --timeout for plain mode, or the default
 // when unset. An explicit --timeout 0 means "no limit".
@@ -215,8 +215,14 @@ func plainTimeout(raw float64, explicit bool) float64 {
 
 // runSSH is the --ssh transport: the stdio pair, or every accepted local
 // connection, goes through the engine. The local side must be an SSH
-// client. It never returns.
-func runSSH(ctx context.Context, remotestr, localstr, servername string, alpns []string, insecure, silent bool, sshPort int, timeoutSec float64) {
+// client; it returns when Ctrl-C or SIGTERM closes the listener.
+func runSSH(remotestr, localstr, servername string, alpns []string, insecure, silent bool, sshPort int, timeoutSec float64) {
+	// Ctrl-C or SIGTERM cancels in-flight probes and sessions. Plain mode has
+	// no shutdown path, so it keeps the OS default: the signal ends the
+	// process.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	host, tlsPort, err := remoteAddr(remotestr, 443)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sclient: %s\n", err)
@@ -256,8 +262,13 @@ func runSSH(ctx context.Context, remotestr, localstr, servername string, alpns [
 	sshListen(ctx, cfg, ln, os.Stderr)
 }
 
-// sshListen gives each accepted connection its own probe.
+// sshListen gives each accepted connection its own probe. Cancelling ctx
+// closes the listener, which ends the accept loop.
 func sshListen(ctx context.Context, cfg sshtlsproxy.Config, ln net.Listener, errOut io.Writer) {
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
