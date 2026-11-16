@@ -46,6 +46,27 @@ func TestSSHALPN(t *testing.T) {
 	}
 }
 
+func TestSSHPortFor(t *testing.T) {
+	cases := []struct {
+		name string
+		ssh  bool
+		raw  int
+		want int
+	}{
+		{"neither flag is plain mode", false, 0, 0},
+		{"--ssh is the shorthand for 22", true, 0, 22},
+		{"a named port is the mode on its own", false, 2222, 2222},
+		{"the port wins over the shorthand", true, 2222, 2222},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sshPortFor(tc.ssh, tc.raw); got != tc.want {
+				t.Fatalf("sshPortFor(%v, %d) = %d, want %d", tc.ssh, tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPlainALPN(t *testing.T) {
 	cases := []struct {
 		name     string

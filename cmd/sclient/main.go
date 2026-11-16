@@ -45,6 +45,7 @@ func usage() {
 		"\n"+
 		"   ex: ssh -o ProxyCommand='sclient --ssh-port %%p %%n' example.com\n"+
 		"      (dual-port SSH probe; the local side must be an SSH client)\n"+
+		"      (--ssh is the same thing with --ssh-port 22)\n"+
 		"\n"+
 		"exit codes (SSH mode): 0 done, 1 failure, 2 usage, 255 no usable server\n"+
 		"\n", ver())
@@ -70,6 +71,7 @@ func main() {
 	var servername string
 	var silent bool
 	var verbose bool
+	var ssh bool
 	var sshPort int
 	var timeoutSec float64
 
@@ -83,6 +85,7 @@ func main() {
 	flag.StringVar(&servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
 	flag.BoolVar(&insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
 	flag.BoolVar(&silent, "silent", false, "less verbose output")
+	flag.BoolVar(&ssh, "ssh", false, "SSH mode shorthand for --ssh-port 22; naming --ssh-port does the same thing")
 	flag.IntVar(&sshPort, "ssh-port", 0, "plain-SSH port to probe alongside <remote>: turns on the dual-port SSH probe (TLS port = <remote>:<port>, default 443). 0 = plain TLS tunnel")
 	flag.Float64Var(&timeoutSec, "timeout", 0, "seconds until a remote connection is ready to communicate (TCP connect + TLS handshake share one deadline). 0 = the default, 3s. There is no unlimited mode.")
 
@@ -104,6 +107,7 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	port := sshPortFor(ssh, sshPort)
 	if timeoutSec < 0 {
 		fmt.Fprintf(os.Stderr, "sclient: --timeout must be 0 (the default) or a positive number of seconds\n")
 		usage()
@@ -136,10 +140,10 @@ func main() {
 		Timeout:            time.Duration(plainTimeout(timeoutSec) * float64(time.Second)),
 	}
 
-	if sshPort > 0 {
-		// --ssh-port replaces the Tunnel: the engine is the transport, and
+	if port > 0 {
+		// SSH mode replaces the Tunnel: the engine is the transport, and
 		// runSSH only returns when the listener is shut down.
-		runSSH(remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, verbose, sshPort, timeoutSec)
+		runSSH(remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, verbose, port, timeoutSec)
 		return
 	}
 
@@ -323,6 +327,22 @@ func newSSHConfig(host string, tlsPort int, servername string, alpns []string, i
 			MinVersion:         tls.VersionTLS12,
 		},
 	}
+}
+
+// defaultSSHPort is what --ssh means: the port SSH is normally on.
+const defaultSSHPort = 22
+
+// sshPortFor resolves --ssh against --ssh-port. Naming a port IS the mode;
+// --ssh is the shorthand for the usual 22. An explicit port always wins, so
+// `--ssh --ssh-port 2222` probes 2222. Zero means plain TLS mode.
+func sshPortFor(sshFlag bool, raw int) int {
+	if raw > 0 {
+		return raw
+	}
+	if sshFlag {
+		return defaultSSHPort
+	}
+	return 0
 }
 
 // plainALPN is --alpn for plain mode. Unset is nil, which lets the tunnel

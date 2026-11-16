@@ -41,7 +41,7 @@ A poor man's (or Windows user's) makeshift replacement for `openssl s_client`,
 - [Examples](#examples)
 - [SSH clients (plain mode)](#ssh-clients-plain-mode)
 - [ssh-tls-proxy](#ssh-tls-proxy)
-- [sclient SSH mode (--ssh-port)](#sclient-ssh-mode---ssh-port)
+- [sclient SSH mode (--ssh-port / --ssh)](#sclient-ssh-mode---ssh-port--ssh)
 - [Build from Source](#build-from-source)
 
 # Install
@@ -86,6 +86,7 @@ sclient [flags] <remote> <local>
   - `--ssh-port <n>` name the plain SSH port to probe alongside `<remote>`:
     this is the switch that turns on the dual-port SSH probe (see
     [SSH mode](#sclient-ssh-mode---ssh-port)). Unset: one TLS connection.
+  - `--ssh` shorthand for `--ssh-port 22`.
   - `--timeout <seconds>` the deadline for a remote connection to be ready to
     communicate. Default 3; `0` means "the default", not "unlimited".
 - remote
@@ -106,6 +107,8 @@ sclient [flags] <remote> <local>
     	specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)
   -silent
     	less verbose output
+  -ssh
+    	SSH mode shorthand for --ssh-port 22
   -ssh-port int
     	plain-SSH port to probe alongside <remote>; turns on the dual-port SSH
     	probe (0 = plain TLS tunnel)
@@ -185,7 +188,8 @@ sclient --alpn '' example.com 3000          # offer nothing, no sniffing
 
 The peek waits at most 1s for the first bytes, so a client that says nothing
 is not mistaken for SSH. The sniff only picks the ALPN; if you want the
-dual-port probe, name the plain SSH port with `--ssh-port`.
+dual-port probe, name the plain SSH port with `--ssh-port` (or `--ssh`, which
+means 22).
 
 # ssh-tls-proxy
 
@@ -236,12 +240,12 @@ come from
 curl -sS https://webinstall.dev/ssh-tls-proxy | bash
 ```
 
-# sclient SSH mode (`--ssh-port`)
+# sclient SSH mode (`--ssh-port` / `--ssh`)
 
-Naming `--ssh-port` is what turns SSH mode on - there is no `--ssh` flag.
-It is the same dual-port probe as `ssh-tls-proxy`, in the sclient shape:
-instead of a single TLS connection to `<remote>`, each connection goes
-through the `sshtlsproxy` engine - `--ssh-port` (plain TCP) and
+Naming `--ssh-port` turns SSH mode on; `--ssh` is the shorthand for
+`--ssh-port 22`. Either one is the same dual-port probe as `ssh-tls-proxy`,
+in the sclient shape: instead of a single TLS connection to `<remote>`, each
+connection goes through the `sshtlsproxy` engine - `--ssh-port` (plain TCP) and
 `<remote>:<port>` (TLS, default 443, ALPN `ssh`) probed at once, the SSH
 identification-banner exchange run against whichever answer(s) arrive, the
 TLS-terminated connection preferred, and the winner spliced in.
@@ -262,8 +266,9 @@ the banner it answered with; `-s/--silent` drops the selection line.
 One thing to know before you use it: on a router-fronted name, `:22` and
 `:443` can be **different servers** (the router and the guest). The probe
 prefers TLS, but if TLS is unavailable you get whatever answers on the plain
-port - which may not be the machine you meant. That is why the port has to be
-named explicitly rather than detected.
+port - which may not be the machine you meant. That is why the plain port has
+to be named - directly, or with `--ssh` - rather than guessed from the client's
+banner.
 
 Exit codes: 0 done, 1 failure, 2 usage, 255 no usable server. Both
 modes accept `host`, `host:port`, or `[ipv6]:port`.

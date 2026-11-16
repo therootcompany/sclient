@@ -37,13 +37,13 @@ Rules to preserve:
 - The peek is bounded (1s) so a client that says nothing is not
   mistaken for SSH and the tunnel never hangs.
 
-## Mode selection (there is no `--ssh` flag)
+## Mode selection: `--ssh-port` is the switch
 
 `--ssh-port <n>` **is** the SSH-mode switch: naming the plain port turns on
 the dual-port probe (ALPN defaults to `ssh`, exit 255 when nothing is
-usable, `-v` shows every candidate). Leaving it unset is a single TLS
-connection. Do not re-add a separate `--ssh` boolean - the mode is the port
-the operator names.
+usable, `-v` shows every candidate). `--ssh` is shorthand for
+`--ssh-port 22` and nothing more; an explicit port always wins. Neither
+flag: a single TLS connection.
 
 `--timeout` is always bounded: `0` means "the default" (3s), never
 "unlimited". Every dial has a deadline.

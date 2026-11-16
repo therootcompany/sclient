@@ -22,7 +22,16 @@ case "$out" in
   *) note "standalone: missing 'no usable server': $out" ;;
 esac
 
-# 1b. -v/--verbose prints every candidate and its banner
+# 1b. --ssh is shorthand for --ssh-port 22: same mode, same probe of :22
+out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --ssh -v --timeout 1 192.0.2.1 2>&1)
+code=$?
+[ "$code" = 255 ] || note "--ssh alone: exit=$code, want 255"
+case "$out" in
+  *"192.0.2.1:22"*) ;;
+  *) note "--ssh alone did not probe port 22: $out" ;;
+esac
+
+# 1c. -v/--verbose prints every candidate and its banner
 out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --verbose --ssh-port "$SSH_PORT" --timeout 1 192.0.2.1 2>&1)
 case "$out" in
   *"dial: ssh"*) ;;
@@ -33,7 +42,7 @@ case "$out" in
   *) note "verbose: no 'dial: tls' line: $out" ;;
 esac
 
-# 1c. --timeout 0 is the default clock, not "forever": a dead host still
+# 1d. --timeout 0 is the default clock, not "forever": a dead host still
 # fails, and it fails bounded (well under 10s).
 start=$(date +%s)
 out=$(printf 'SSH-2.0-e2e\r\n' | timeout 20 ./bin/sclient --ssh-port "$SSH_PORT" --timeout 0 192.0.2.1 2>&1)
