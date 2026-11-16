@@ -191,7 +191,7 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 		raw.serverName = strings.TrimSpace(os.Getenv("SSHTLSPROXY_SERVERNAME"))
 	}
 
-	cfg.ALPN = parseOptionList(raw.alpnRaw)
+	cfg.ALPN = splitList(raw.alpnRaw)
 	// explicit --alpn "" = no ALPN requirement (non-nil empty, no note);
 	// an omitted flag stays nil and takes the engine default
 	if set["alpn"] && cfg.ALPN == nil {
@@ -234,12 +234,11 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 	return cfg, tlsCfg, true
 }
 
-// parseOptionList parses "a,b,c" "a b c" and "a, b, c" the same.
-func parseOptionList(optionList string) []string {
-	optionList = strings.TrimSpace(optionList)
-	if optionList == "" {
+// splitList splits "a,b,c" "a b c" and "a, b, c" the same.
+func splitList(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
 		return nil
 	}
-	optionList = strings.ReplaceAll(optionList, ",", " ")
-	return strings.Fields(optionList)
+	return strings.Fields(strings.ReplaceAll(s, ",", " "))
 }

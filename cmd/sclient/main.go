@@ -89,7 +89,7 @@ func main() {
 	set := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
-	alpns := parseOptionList(alpnList)
+	alpns := splitList(alpnList)
 	remotestr := flag.Arg(0)
 	localstr := flag.Arg(1)
 
@@ -145,18 +145,13 @@ func main() {
 	}
 }
 
-// parsers "a,b,c" "a b c" and "a, b, c" all the same
-func parseOptionList(optionList string) []string {
-	optionList = strings.TrimSpace(optionList)
-
-	if len(optionList) == 0 {
+// splitList splits "a,b,c" "a b c" and "a, b, c" the same.
+func splitList(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
 		return nil
 	}
-
-	optionList = strings.ReplaceAll(optionList, ",", " ")
-	options := strings.Fields(optionList)
-
-	return options
+	return strings.Fields(strings.ReplaceAll(s, ",", " "))
 }
 
 // remoteAddr parses a remote target: <host>, <host>:<port> or
@@ -286,7 +281,7 @@ func newSSHConfig(host string, tlsPort int, servername string, alpns []string, i
 // sshALPN resolves --alpn for --ssh mode: unset takes [ssh], an explicit
 // list is as given, an explicit empty list means no ALPN requirement.
 func sshALPN(raw string, explicit bool) []string {
-	a := parseOptionList(raw)
+	a := splitList(raw)
 	if explicit && a == nil {
 		return []string{}
 	}
