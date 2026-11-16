@@ -96,9 +96,9 @@ func probeLoopbackTLS() bool {
 	return true
 }
 
-// The probe clock is the only cancel, so "operation was canceled" must
-// read as a timeout with the elapsed time.
-func TestDialErrorTimeoutWording(t *testing.T) {
+// The probe clock is the only cancel inside dialCandidate, so "operation was
+// canceled" must read as a timeout with the elapsed time.
+func TestDialCandidateClockWording(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 0)
 	defer cancel()
 	cfg := Config{Host: "192.0.2.1", Timeout: 3 * time.Second}
@@ -114,8 +114,8 @@ func TestDialErrorTimeoutWording(t *testing.T) {
 	}
 }
 
-// A refused port is not a Timeout: the real error must survive.
-func TestDialErrorRefusedPortWording(t *testing.T) {
+// A refused port is not a timeout: the real error must survive.
+func TestDialCandidateRefusedPort(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	cfg := Config{Host: "127.0.0.1", Timeout: 2 * time.Second}

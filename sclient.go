@@ -36,23 +36,15 @@ func (t *Tunnel) tlsConfig() *tls.Config {
 	}
 }
 
-// dialer bounds the connect by Timeout and sets keep-alive explicitly.
-func (t *Tunnel) dialer() *net.Dialer {
-	return &net.Dialer{
-		Timeout:   t.Timeout,
-		KeepAlive: 30 * time.Second,
-	}
-}
-
 // dialTLS connects and handshakes under one Deadline; a zero Timeout is
 // unlimited. The returned connection is ready to communicate.
 func (t *Tunnel) dialTLS(remote string) (*tls.Conn, error) {
-	d := t.dialer()
 	if t.Timeout <= 0 {
-		return tls.Dial("tcp", remote, t.tlsConfig())
+		return tls.Dial("tcp", remote, t.tlsConfig()) // no deadline, no dialer
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), t.Timeout)
 	defer cancel()
+	d := &net.Dialer{Timeout: t.Timeout, KeepAlive: 30 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", remote)
 	if err != nil {
 		return nil, err

@@ -78,18 +78,6 @@ func readyTLS(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-// The dialer is never bare: Timeout bounds the connect, keep-alive is set.
-func TestTunnelDialer(t *testing.T) {
-	d := (&Tunnel{Timeout: 2 * time.Second}).dialer()
-	if d.Timeout != 2*time.Second || d.KeepAlive != 30*time.Second {
-		t.Fatalf("dialer = %+v, want a 2s connect timeout and 30s keep-alive", d)
-	}
-	d = (&Tunnel{}).dialer()
-	if d.Timeout != 0 || d.KeepAlive != 30*time.Second {
-		t.Fatalf("zero-timeout dialer = %+v, want no connect limit, 30s keep-alive", d)
-	}
-}
-
 // One deadline covers connect + handshake: a server that accepts TCP but
 // never handshakes fails at the Timeout instead of hanging.
 func TestDialTLSStalledHandshake(t *testing.T) {
