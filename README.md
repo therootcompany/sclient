@@ -210,8 +210,10 @@ ssh -o 'ProxyCommand=sclient --ssh example.com' example.com
 The local side must be an SSH client: the first line of each connection
 must be an `SSH-2.0` banner. `--alpn` defaults to `ssh` in this mode
 (`--alpn ''` means "no ALPN requirement"); `--ssh-port` (default 22) is
-also available. Exit codes: 0 done,
-1 failure, 2 usage, 255 no usable server.
+also available.
+
+Exit codes: 0 done, 1 failure, 2 usage, 255 no usable server. Both
+modes accept `host`, `host:port`, or `[ipv6]:port`.
 
 The failure report goes to sclient's stderr — there is no
 `/dev/tty` mirror here, because a standalone tool is not an ssh

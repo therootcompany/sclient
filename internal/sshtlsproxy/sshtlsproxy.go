@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -65,7 +66,7 @@ var errNotSSHBanner = errors.New("not an SSH identification banner")
 // buffered in r for the caller to relay.
 func readBanner(r *bufio.Reader) (string, error) {
 	var sb strings.Builder
-	for i := 0; i <= maxBannerLen+1; i++ { // at most 255 chars + CRLF
+	for range maxBannerLen + 2 { // at most 255 chars + CRLF
 		b, err := r.ReadByte()
 		if err != nil {
 			return "", fmt.Errorf("read banner: %w", err)
@@ -460,15 +461,14 @@ func splice(c *candidate, clientIn *bufio.Reader, out io.Writer) {
 	// Sessions go idle; no more timers.
 	_ = c.conn.SetDeadline(time.Time{})
 
-	pumped := make(chan struct{})
-	go func() {
-		defer close(pumped)
+	var drained sync.WaitGroup
+	drained.Go(func() {
 		_ = writeBanner(out, c.banner)
 		_, _ = io.Copy(out, c.r)
-	}()
+	})
 	_, _ = io.Copy(c.conn, clientIn)
 	_ = c.conn.Close()
-	<-pumped // let the server->client pump drain before we go
+	drained.Wait() // let the server->client pump drain before we go
 }
 
 // failNoServer reports that neither candidate is usable. The message

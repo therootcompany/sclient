@@ -3,6 +3,7 @@ package sclient
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -73,7 +74,7 @@ func (t *Tunnel) dialTLS(remote string) (*tls.Conn, error) {
 // DialAndListen will create a test TLS connection to the remote address and then
 // begin listening locally. Each local connection will result in a separate remote connection.
 func (t *Tunnel) DialAndListen() error {
-	remote := t.RemoteAddress + ":" + strconv.Itoa(t.RemotePort)
+	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
 	conn, err := t.dialTLS(remote)
 
 	if err != nil {
@@ -97,7 +98,7 @@ func (t *Tunnel) DialAndListen() error {
 	}
 
 	// use net.Conn
-	local := t.LocalAddress + ":" + strconv.Itoa(t.LocalPort)
+	local := net.JoinHostPort(t.LocalAddress, strconv.Itoa(t.LocalPort))
 	ln, err := net.Listen("tcp", local)
 	if err != nil {
 		return err
@@ -110,7 +111,7 @@ func (t *Tunnel) DialAndListen() error {
 
 	for {
 		conn, err := ln.Accept()
-		if nil != err {
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
 			continue
 		}
@@ -148,39 +149,15 @@ type netReadWriteCloser interface {
 	RemoteAddr() net.Addr
 }
 
-func pipe(r netReadWriteCloser, w netReadWriteCloser, t string) {
-	buffer := make([]byte, 2048)
-	for {
-		done := false
-		// NOTE: count may be > 0 even if there's an err
-		//fmt.Fprintf(os.Stdout, "[debug] (%s) reading\n", t)
-		count, err := r.Read(buffer)
-		if nil != err {
-			//fmt.Fprintf(os.Stdout, "[debug] (%s:%d) error reading %s\n", t, count, err)
-			if io.EOF != err {
-				fmt.Fprintf(os.Stderr, "[read error] (%s:%d) %s\n", t, count, err)
-			}
-			_ = r.Close()
-			//w.Close()
-			done = true
-		}
-		if count == 0 {
-			break
-		}
-		_, err = w.Write(buffer[:count])
-		if nil != err {
-			//fmt.Fprintf(os.Stdout, "[debug] %s error writing\n", t)
-			if io.EOF != err {
-				fmt.Fprintf(os.Stderr, "[write error] (%s) %s\n", t, err)
-			}
-			// TODO handle error closing?
-			_ = r.Close()
-			//w.Close()
-			done = true
-		}
-		if done {
-			break
-		}
+// pipe copies src to dst and reports transport errors. io.EOF is the
+// normal end of a session, not an error; the source is closed when the
+// stream ends.
+func pipe(dst io.Writer, src io.Reader, name string) {
+	if _, err := io.Copy(dst, src); err != nil && !errors.Is(err, io.EOF) {
+		fmt.Fprintf(os.Stderr, "[copy error] (%s) %s\n", name, err)
+	}
+	if c, ok := src.(io.Closer); ok {
+		_ = c.Close()
 	}
 }
 

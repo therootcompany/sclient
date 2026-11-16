@@ -68,10 +68,7 @@ func TestPlainTimeout(t *testing.T) {
 }
 
 func TestNewSSHConfigDefaults(t *testing.T) {
-	cfg, err := newSSHConfig("example.com", "", []string{"ssh"}, false, false, 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := newSSHConfig("example.com", 443, "", []string{"ssh"}, false, false, 0, 0)
 	if cfg.Name != "sclient" {
 		t.Errorf("Name = %q, want sclient", cfg.Name)
 	}
@@ -96,29 +93,61 @@ func TestNewSSHConfigDefaults(t *testing.T) {
 }
 
 func TestNewSSHConfigPorts(t *testing.T) {
-	cfg, err := newSSHConfig("example.com:8443", "", []string{"ssh"}, false, false, 2222, 2.5)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := newSSHConfig("example.com", 8443, "", []string{"ssh"}, false, false, 2222, 2.5)
 	if cfg.TLSPort != 8443 || cfg.SSHPort != 2222 || cfg.Timeout != 2500*time.Millisecond {
 		t.Errorf("TLSPort/SSHPort/Timeout = %d %d %v, want 8443 2222 2.5s", cfg.TLSPort, cfg.SSHPort, cfg.Timeout)
 	}
 }
 
-func TestNewSSHConfigIPv6(t *testing.T) {
-	cfg, err := newSSHConfig("[2001:db8::1]:8443", "", []string{"ssh"}, false, false, 0, 0)
-	if err != nil {
-		t.Fatal(err)
+func TestRemoteAddr(t *testing.T) {
+	cases := []struct {
+		in   string
+		host string
+		port int
+	}{
+		{"example.com", "example.com", 443},
+		{"example.com:8443", "example.com", 8443},
+		{"[2001:db8::1]:8443", "2001:db8::1", 8443},
+		{"127.0.0.1:22", "127.0.0.1", 22},
 	}
-	if cfg.Host != "2001:db8::1" || cfg.TLSPort != 8443 {
-		t.Errorf("Host/TLSPort = %s %d, want 2001:db8::1 8443", cfg.Host, cfg.TLSPort)
+	for _, tc := range cases {
+		host, port, err := remoteAddr(tc.in, 443)
+		if err != nil {
+			t.Fatalf("remoteAddr(%q): %v", tc.in, err)
+		}
+		if host != tc.host || port != tc.port {
+			t.Fatalf("remoteAddr(%q) = %s:%d, want %s:%d", tc.in, host, port, tc.host, tc.port)
+		}
+	}
+	for _, bad := range []string{"example.com:abc", "example.com:0", "example.com:70000", "", "a:b:c"} {
+		if _, _, err := remoteAddr(bad, 443); err == nil {
+			t.Errorf("remoteAddr(%q): expected an error", bad)
+		}
 	}
 }
 
-func TestNewSSHConfigErrors(t *testing.T) {
-	for _, bad := range []string{"example.com:abc", "example.com:0", "example.com:70000", ""} {
-		if _, err := newSSHConfig(bad, "", []string{"ssh"}, false, false, 0, 0); err == nil {
-			t.Errorf("newSSHConfig(%q): expected an error", bad)
+func TestLocalAddr(t *testing.T) {
+	cases := []struct {
+		in   string
+		host string
+		port int
+	}{
+		{"3000", "localhost", 3000},
+		{"0.0.0.0:4080", "0.0.0.0", 4080},
+		{"[::1]:3000", "::1", 3000},
+	}
+	for _, tc := range cases {
+		host, port, err := localAddr(tc.in)
+		if err != nil {
+			t.Fatalf("localAddr(%q): %v", tc.in, err)
+		}
+		if host != tc.host || port != tc.port {
+			t.Fatalf("localAddr(%q) = %s:%d, want %s:%d", tc.in, host, port, tc.host, tc.port)
+		}
+	}
+	for _, bad := range []string{"notaport", "host:notaport", ""} {
+		if _, _, err := localAddr(bad); err == nil {
+			t.Errorf("localAddr(%q): expected an error", bad)
 		}
 	}
 }
@@ -139,11 +168,7 @@ func freePort(t *testing.T) int {
 // port answers gets EOF and the report lands on the probe's errOut.
 // Fully offline: both target ports are refused on loopback.
 func TestSSHListenerNoServer(t *testing.T) {
-	cfg, err := newSSHConfig("127.0.0.1", "", []string{"ssh"}, false, false, freePort(t), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.TLSPort = freePort(t)
+	cfg := newSSHConfig("127.0.0.1", freePort(t), "", []string{"ssh"}, false, false, freePort(t), 0)
 	cfg.Timeout = 2 * time.Second
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

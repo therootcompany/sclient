@@ -116,52 +116,30 @@ func main() {
 		runSSH(remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, sshPort, timeoutSec)
 	}
 
-	remote := strings.Split(remotestr, ":")
-	//remoteAddr, remotePort, err := net.SplitHostPort(remotestr)
-	if len(remote) == 2 {
-		rport, err := strconv.Atoi(remote[1])
-		if nil != err {
-			usage()
-			os.Exit(0)
-		}
-		sclient.RemotePort = rport
-	} else if len(remote) != 1 {
+	remoteHost, remotePort, err := remoteAddr(remotestr, 443)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sclient: %s\n", err)
 		usage()
-		os.Exit(0)
+		os.Exit(2)
 	}
-	sclient.RemoteAddress = remote[0]
+	sclient.RemoteAddress, sclient.RemotePort = remoteHost, remotePort
 
 	if localstr == "-" || localstr == "|" {
 		// User may specify stdin/stdout instead of net
 		sclient.LocalAddress = localstr
 		sclient.LocalPort = -1
 	} else {
-		// Test that argument is a local address
-		local := strings.Split(localstr, ":")
-
-		if len(local) == 1 {
-			lport, err := strconv.Atoi(local[0])
-			if nil != err {
-				usage()
-				os.Exit(0)
-			}
-			sclient.LocalPort = lport
-		} else {
-			lport, err := strconv.Atoi(local[1])
-			if nil != err {
-				usage()
-				os.Exit(0)
-			}
-			sclient.LocalAddress = local[0]
-			sclient.LocalPort = lport
+		lhost, lport, err := localAddr(localstr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sclient: %s\n", err)
+			usage()
+			os.Exit(2)
 		}
+		sclient.LocalAddress, sclient.LocalPort = lhost, lport
 	}
 
-	err := sclient.DialAndListen()
-	if nil != err {
+	if err := sclient.DialAndListen(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
-		//usage()
-		//os.Exit(6)
 	}
 }
 
@@ -177,6 +155,46 @@ func parseOptionList(optionList string) []string {
 	options := strings.Fields(optionList)
 
 	return options
+}
+
+// remoteAddr parses a remote target: <host>, <host>:<port> or
+// [<ipv6>]:<port>. A bare host takes the default port.
+func remoteAddr(s string, defaultPort int) (string, int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", 0, fmt.Errorf("empty address")
+	}
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		if strings.Contains(s, ":") {
+			return "", 0, fmt.Errorf("%q: expected <host> or <host>:<port>", s)
+		}
+		return s, defaultPort, nil
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return "", 0, fmt.Errorf("%q: %q is not a port", s, port)
+	}
+	return host, p, nil
+}
+
+// localAddr parses the local listen address: a bare number is a port on
+// localhost; host:port (or [ipv6]:port) sets both.
+func localAddr(s string) (string, int, error) {
+	s = strings.TrimSpace(s)
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		p, err := strconv.Atoi(s)
+		if err != nil {
+			return "", 0, fmt.Errorf("%q: expected <port> or <host>:<port>", s)
+		}
+		return "localhost", p, nil
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return "", 0, fmt.Errorf("%q: %q is not a port", s, port)
+	}
+	return host, p, nil
 }
 
 // defaultPlainTimeout bounds a plain (non-ssh) remote connect in
@@ -199,33 +217,27 @@ func plainTimeout(raw float64, explicit bool) float64 {
 // must be an SSH client: its first line must be an SSH-2.0 banner.
 // It never returns.
 func runSSH(remotestr, localstr, servername string, alpns []string, insecure, silent bool, sshPort int, timeoutSec float64) {
-	cfg, err := newSSHConfig(remotestr, servername, alpns, insecure, silent, sshPort, timeoutSec)
-	if nil != err {
+	host, tlsPort, err := remoteAddr(remotestr, 443)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "sclient: %s\n", err)
 		usage()
 		os.Exit(2)
 	}
+	cfg := newSSHConfig(host, tlsPort, servername, alpns, insecure, silent, sshPort, timeoutSec)
 
 	if localstr == "-" || localstr == "|" {
 		exitSSH(cfg.Host, sshtlsproxy.Probe(context.Background(), cfg, os.Stdin, os.Stdout, os.Stderr))
 	}
 
-	// local listener: the same naive split as the plain mode above
-	local := strings.Split(localstr, ":")
-	lhost, lport := "localhost", 0
-	if len(local) == 1 {
-		lport, err = strconv.Atoi(local[0])
-	} else {
-		lhost = local[0]
-		lport, err = strconv.Atoi(local[1])
-	}
-	if nil != err {
+	lhost, lport, err := localAddr(localstr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sclient: %s\n", err)
 		usage()
 		os.Exit(2)
 	}
 
 	ln, err := net.Listen("tcp", net.JoinHostPort(lhost, strconv.Itoa(lport)))
-	if nil != err {
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "sclient: %s\n", err)
 		os.Exit(1)
 	}
@@ -240,32 +252,20 @@ func runSSH(remotestr, localstr, servername string, alpns []string, insecure, si
 func sshListen(cfg sshtlsproxy.Config, ln net.Listener, errOut io.Writer) {
 	for {
 		conn, err := ln.Accept()
-		if nil != err {
+		if err != nil {
 			return
 		}
-		go func(conn net.Conn) {
+		go func() {
 			_ = sshtlsproxy.Probe(context.Background(), cfg, conn, conn, errOut)
-		}(conn)
+		}()
 	}
 }
 
-// newSSHConfig builds the engine config for one --ssh target. A bare
-// host takes the TLS port 443; host:port takes that port as the TLS
-// port. The caller's *tls.Config is used as-is by the engine, so the
-// TLS 1.2 floor comes from here, not the engine default.
-func newSSHConfig(remotestr, servername string, alpns []string, insecure, silent bool, sshPort int, timeoutSec float64) (sshtlsproxy.Config, error) {
-	host := remotestr
-	tlsPort := 443
-	if h, p, err := net.SplitHostPort(remotestr); nil == err {
-		port, aerr := strconv.Atoi(p)
-		if nil != aerr || port <= 0 || port > 65535 {
-			return sshtlsproxy.Config{}, fmt.Errorf("%q: the port after the colon is not a valid port", remotestr)
-		}
-		host, tlsPort = h, port
-	}
-	if host == "" {
-		return sshtlsproxy.Config{}, fmt.Errorf("empty host")
-	}
+// newSSHConfig builds the engine config for one --ssh target from an
+// already-parsed host and TLS port. The caller's *tls.Config is used
+// as-is by the engine, so the TLS 1.2 floor comes from here, not the
+// engine default.
+func newSSHConfig(host string, tlsPort int, servername string, alpns []string, insecure, silent bool, sshPort int, timeoutSec float64) sshtlsproxy.Config {
 	if servername == "" {
 		servername = host // an IP literal: Go omits SNI itself
 	}
@@ -283,7 +283,7 @@ func newSSHConfig(remotestr, servername string, alpns []string, insecure, silent
 			InsecureSkipVerify: insecure,
 			MinVersion:         tls.VersionTLS12,
 		},
-	}, nil
+	}
 }
 
 // sshALPN resolves --alpn for --ssh mode: an unset flag takes the
