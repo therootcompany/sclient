@@ -33,7 +33,7 @@ must exist on every machine whose ssh_config uses it.
 
 ```
 Host *
-    ProxyCommand ssh-tls-proxy --timeout 3 --alpn ssh --ssh-port %p %n
+    ProxyCommand ssh-tls-proxy --timeout 3 --alpn ssh --ssh-port %p %n:443
 ```
 
 Flags (values shown are defaults): `--ssh-port 22`, `--tls-port 443`,

@@ -14,7 +14,7 @@ SSH_OPTS="-T -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -
 SSH_PORT=22
 
 # 1a. standalone against a dead host: informative stderr, exit 255
-out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --ssh-port "$SSH_PORT" --timeout 1 192.0.2.1 2>&1)
+out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --ssh-port "$SSH_PORT" --timeout 1 192.0.2.1:443 2>&1)
 code=$?
 [ "$code" = 255 ] || note "standalone: exit=$code, want 255"
 case "$out" in
@@ -23,7 +23,7 @@ case "$out" in
 esac
 
 # 1b. --ssh is shorthand for --ssh-port 22: same mode, same probe of :22
-out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --ssh -v --timeout 1 192.0.2.1 2>&1)
+out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --ssh -v --timeout 1 192.0.2.1:443 2>&1)
 code=$?
 [ "$code" = 255 ] || note "--ssh alone: exit=$code, want 255"
 case "$out" in
@@ -45,7 +45,7 @@ esac
 # 1d. --timeout 0 is the default clock, not "forever": a dead host still
 # fails, and it fails bounded (well under 10s).
 start=$(date +%s)
-out=$(printf 'SSH-2.0-e2e\r\n' | timeout 20 ./bin/sclient --ssh-port "$SSH_PORT" --timeout 0 192.0.2.1 2>&1)
+out=$(printf 'SSH-2.0-e2e\r\n' | timeout 20 ./bin/sclient --ssh-port "$SSH_PORT" --timeout 0 192.0.2.1:443 2>&1)
 code=$?
 elapsed=$(( $(date +%s) - start ))
 [ "$code" = 255 ] || note "timeout 0: exit=$code, want 255"
@@ -63,12 +63,12 @@ elapsed=$(( $(date +%s) - start ))
 ./bin/sclient --ssh-port 0 example.com >/dev/null 2>&1
 [ $? = 2 ] || note "explicit --ssh-port 0: want exit 2 (0 is the sentinel, not a port)"
 
-# 4. Live SSH mode: a router guest reached through 443 + ALPN. The selection
-# line is the assertion; auth success is not required, so key rotation will
-# not break the suite.
+# 4. Live SSH mode, documented form: the TLS front named as host:443, the
+# plain port from ssh's own %p. The selection line is the assertion; auth
+# success is not required, so key rotation will not break the suite.
 if [ "${LIVE:-0}" = 1 ]; then
   out=$(ssh $SSH_OPTS \
-    -o "ProxyCommand=./bin/sclient --ssh-port $SSH_PORT --timeout 3 pw.bnna.net" \
+    -o "ProxyCommand=./bin/sclient --ssh-port $SSH_PORT --timeout 3 %n:443" \
     pw.bnna.net true 2>&1)
   case "$out" in
     *"using tls"*) ;;
@@ -78,7 +78,7 @@ if [ "${LIVE:-0}" = 1 ]; then
   # 5. Plain mode + the SSH banner sniff: no --ssh-port, still reaches sshd
   # over 443 because the client announced itself as SSH.
   out=$(ssh $SSH_OPTS \
-    -o "ProxyCommand=./bin/sclient pw.bnna.net -" \
+    -o "ProxyCommand=./bin/sclient %n:443 -" \
     pw.bnna.net true 2>&1)
   case "$out" in
     *"publickey"*) ;;

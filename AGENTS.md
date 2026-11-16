@@ -45,6 +45,12 @@ usable, `-v` shows every candidate). `--ssh` is shorthand for
 `--ssh-port 22` and nothing more; an explicit port always wins. Neither
 flag: a single TLS connection.
 
+Documented ssh_config form - the TLS port is written out, never implied:
+
+```
+ProxyCommand sclient --ssh-port %p %n:443
+```
+
 `--timeout` is always bounded: `0` means "the default" (3s), never
 "unlimited". Every dial has a deadline.
 
