@@ -231,6 +231,7 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 	if serverName == "" {
 		serverName = host
 	}
+	cfg.ServerName = serverName
 	tlsCfg := &tls.Config{
 		ServerName:         serverName,
 		NextProtos:         cfg.ALPN,

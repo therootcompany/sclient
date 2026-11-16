@@ -265,21 +265,19 @@ func TestDialCandidateTLS(t *testing.T) {
 		t.Fatal("expected certificate verification error")
 	}
 
-	// Front that completes TLS but advertises no ALPN: the handshake
-	// succeeds and the negotiated protocol is empty. The candidate is
-	// kept — the banner is still worth sending — and the note is
-	// carried for the failure report.
+	// Front that completes TLS but advertises no ALPN: the handshake succeeds,
+	// but the gate closes the candidate - a front that will not say "ssh" is
+	// not an ssh route for this name.
 	port2 := serveAt(t, cert, nil)
 	c = dialCandidateTLS(ctx, cfg, port2, &net.Dialer{}, insecure, noopTransport)
-	if c.err != nil {
-		t.Fatalf("a no-ALPN front must not be rejected outright: %v", c.err)
+	if c.err == nil {
+		t.Fatal("a front with no acceptable ALPN must be rejected")
 	}
-	if c.conn == nil {
-		t.Fatal("expected a live connection to the no-ALPN front")
+	if !strings.Contains(c.err.Error(), "negotiated ALPN (none), wanted one of [ssh]") {
+		t.Errorf("expected the ALPN gate error, got: %v", c.err)
 	}
-	_ = c.conn.Close()
-	if !strings.Contains(c.alpnNote, "required one of [ssh]") {
-		t.Errorf("expected an ALPN note, got: %q", c.alpnNote)
+	if c.conn != nil {
+		_ = c.conn.Close()
 	}
 
 	// Front that advertises an ALPN the client never offered: Go's handshake

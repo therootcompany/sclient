@@ -178,20 +178,41 @@ func TestRunPickSSHWhenTLSDown(t *testing.T) {
 	}
 }
 
-// TestRunPickTLSWithoutALPN: the TLS front has no ALPN and the plain port
-// answers too. The banner is still sent over TLS, and answering wins:
-// behind a tenant front the plain port is a different server.
-func TestRunPickTLSWithoutALPN(t *testing.T) {
+// TestRunPlainWinsWithoutALPN: the ALPN gate closes a front that terminates
+// TLS without an acceptable protocol, so the plain server is the one used.
+func TestRunPlainWinsWithoutALPN(t *testing.T) {
 	if !loopbackTLSOK {
 		t.Skip("loopback TLS broken in this environment (see probeLoopbackTLS)")
 	}
 	cert := testCert(t)
 	tlsAddr := startBannerServer(t, "SSH-2.0-tls-noalpn", "", "", &cert)
 	sshAddr := startBannerServer(t, "SSH-2.0-plain-server", "", "", nil)
-	tlsHost, tlsPort := hostPort(t, tlsAddr)
+	_, tlsPort := hostPort(t, tlsAddr)
 	_, sshPort := hostPort(t, sshAddr)
 
-	cfg := baseConfig(t, tlsHost, sshPort, tlsPort)
+	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
+	err, lines := runClient(t, cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("err = %v; lines: %q", err, lines)
+	}
+	if len(lines) < 1 || lines[0] != "SSH-2.0-plain-server" {
+		t.Errorf("banners = %q, want the plain server's first", lines)
+	}
+}
+
+// The gate is off when the operator names no protocol: the front is tried
+// as usual and its banner wins.
+func TestRunNoALPNRequirementStillConnects(t *testing.T) {
+	if !loopbackTLSOK {
+		t.Skip("loopback TLS broken in this environment (see probeLoopbackTLS)")
+	}
+	cert := testCert(t)
+	tlsAddr := startBannerServer(t, "SSH-2.0-tls-noalpn", "", "", &cert)
+	tlsHost, tlsPort := hostPort(t, tlsAddr)
+
+	cfg := baseConfig(t, tlsHost, 1, tlsPort)
+	cfg.ALPN = []string{}
+	cfg.TLS.NextProtos = nil
 	err, lines := runClient(t, cfg, io.Discard)
 	if err != nil {
 		t.Fatalf("err = %v; lines: %q", err, lines)
@@ -201,14 +222,14 @@ func TestRunPickTLSWithoutALPN(t *testing.T) {
 	}
 }
 
-// TestRunNoALPNFailureMessage: no banner answer, plain port refused; the
-// 255 report must carry the ALPN note, not just the read error.
+// TestRunNoALPNFailureMessage: the gate rejects the front and the plain port
+// is refused; the 255 report must say which ALPN the front negotiated.
 func TestRunNoALPNFailureMessage(t *testing.T) {
 	if !loopbackTLSOK {
 		t.Skip("loopback TLS broken in this environment (see probeLoopbackTLS)")
 	}
 	cert := testCert(t)
-	// Handshake completes, then the connection closes: no banner.
+	// Handshake completes, no ALPN: the candidate never reaches the banner.
 	tlsPort := serveAt(t, cert, nil)
 
 	cfg := baseConfig(t, "127.0.0.1", 1, tlsPort) // plain side refused
@@ -220,8 +241,70 @@ func TestRunNoALPNFailureMessage(t *testing.T) {
 	if !strings.Contains(diag.String(), "no usable server") {
 		t.Errorf("expected a no-usable-server report, got: %s", diag.String())
 	}
-	if !strings.Contains(diag.String(), "TLS negotiated ALPN (none), required one of [ssh]") {
-		t.Errorf("expected the ALPN note in the report, got: %s", diag.String())
+	if !strings.Contains(diag.String(), "negotiated ALPN (none), wanted one of [ssh]") {
+		t.Errorf("expected the negotiated ALPN in the report, got: %s", diag.String())
+	}
+}
+
+// TestRunPlainHostMismatch: the plain port answers, but its banner declares a
+// host that is not the one asked for. That is the front's own sshd, not the
+// tenant: refuse it and say so.
+func TestRunPlainHostMismatch(t *testing.T) {
+	sshAddr := startBannerServer(t, "SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 host:vms.example.com", "", "", nil)
+	_, sshPort := hostPort(t, sshAddr)
+
+	cfg := baseConfig(t, "127.0.0.1", sshPort, 1) // tls side refused
+	cfg.ServerName = "guest.example.com"
+	var diag strings.Builder
+	err, lines := runClient(t, cfg, &diag)
+	if !errors.Is(err, ErrNoServer) {
+		t.Fatalf("want ErrNoServer, got %v; lines: %q", err, lines)
+	}
+	if !strings.Contains(diag.String(), `declares vms.example.com, not "guest.example.com"`) {
+		t.Errorf("expected the host mismatch in the report, got: %s", diag.String())
+	}
+	if !strings.Contains(diag.String(), "SSH-2.0-OpenSSH_9.6") {
+		t.Errorf("expected the answered banner in the report, got: %s", diag.String())
+	}
+}
+
+// TestRunPlainHostMatches: one of the declared hosts is the name asked for,
+// so the connection is used.
+func TestRunPlainHostMatches(t *testing.T) {
+	sshAddr := startBannerServer(t, "SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 host:vms.example.com,guest.example.com", "", "", nil)
+	_, sshPort := hostPort(t, sshAddr)
+
+	cfg := baseConfig(t, "127.0.0.1", sshPort, 1)
+	cfg.ServerName = "guest.example.com"
+	err, lines := runClient(t, cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("err = %v; lines: %q", err, lines)
+	}
+	if len(lines) < 1 || lines[0] != "SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 host:vms.example.com,guest.example.com" {
+		t.Errorf("banners = %q, want the declaring server's", lines)
+	}
+}
+
+// TestRunTLSHostMismatch: TLS terminates and negotiates ssh, but the sshd on
+// the other side of the route declares a different host. Neither candidate
+// is the intended server.
+func TestRunTLSHostMismatch(t *testing.T) {
+	if !loopbackTLSOK {
+		t.Skip("loopback TLS broken in this environment (see probeLoopbackTLS)")
+	}
+	cert := testCert(t)
+	tlsAddr := startBannerServer(t, "SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 host:vms.example.com", "", "ssh", &cert)
+	_, tlsPort := hostPort(t, tlsAddr)
+
+	cfg := baseConfig(t, "127.0.0.1", 1, tlsPort) // plain side refused
+	cfg.ServerName = "guest.example.com"
+	var diag strings.Builder
+	err, _ := runClient(t, cfg, &diag)
+	if !errors.Is(err, ErrNoServer) {
+		t.Fatalf("want ErrNoServer, got %v; diag: %s", err, diag.String())
+	}
+	if !strings.Contains(diag.String(), `declares vms.example.com, not "guest.example.com"`) {
+		t.Errorf("expected the host mismatch in the report, got: %s", diag.String())
 	}
 }
 

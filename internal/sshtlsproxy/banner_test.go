@@ -3,6 +3,7 @@ package sshtlsproxy
 import (
 	"bufio"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,60 @@ func TestReadBannerReadAhead(t *testing.T) {
 	}
 	if string(rest) != kex {
 		t.Errorf("read-ahead = %q, want %q", rest, kex)
+	}
+}
+
+// RFC 4253 section 4.2: everything after the protocol version is a comment.
+// A front can name itself there; a banner that names no host declares nothing.
+func TestDeclaredHosts(t *testing.T) {
+	tests := []struct {
+		banner string
+		want   []string
+	}{
+		{"SSH-2.0-OpenSSH_10.5", nil},
+		{"SSH-2.0-OpenSSH_9.6p1 tlsrouter-v0.9.4-2eeb5da", nil},
+		{"SSH-2.0-OpenSSH_9.6 host:vms.example.com", []string{"vms.example.com"}},
+		{"SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 host:vms.example.com", []string{"vms.example.com"}},
+		{"SSH-2.0-x hostname:a.example.com,b.example.com", []string{"a.example.com", "b.example.com"}},
+		{"SSH-2.0-x HOST:vms.example.com", []string{"vms.example.com"}},
+		{"SSH-2.0-x host:", nil},
+		{"SSH-2.0-x myhost:vms.example.com", nil}, // not a host: field
+		{"SSH-2.0-x host:vms.example.com,", []string{"vms.example.com"}},
+		{"SSH-2.0-x hostname:vms.example.com host:web1.internal", []string{"vms.example.com", "web1.internal"}},
+	}
+	for _, tc := range tests {
+		got := declaredHosts(tc.banner)
+		if len(got) != len(tc.want) {
+			t.Errorf("declaredHosts(%q) = %v, want %v", tc.banner, got, tc.want)
+			continue
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("declaredHosts(%q) = %v, want %v", tc.banner, got, tc.want)
+		}
+	}
+}
+
+// A declared host that is not the name we asked for is a different server;
+// a banner that declares nothing is no evidence either way.
+func TestBannerMismatch(t *testing.T) {
+	tests := []struct {
+		want   string
+		banner string
+		want_  string
+	}{
+		{"guest.example.com", "SSH-2.0-OpenSSH_9.6", ""},
+		{"guest.example.com", "SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 host:guest.example.com", ""},
+		{"guest.example.com", "SSH-2.0-x host:vms.example.com,guest.example.com", ""},
+		{"Guest.example.com", "SSH-2.0-x HOST:guest.example.com", ""},
+		{"guest.example.com", "SSH-2.0-x tlsrouter-v0.9.4 host:vms.example.com",
+			`banner "SSH-2.0-x tlsrouter-v0.9.4 host:vms.example.com" declares vms.example.com, not "guest.example.com"`},
+		{"", "SSH-2.0-x host:vms.example.com", ""},          // no name asked: nothing to match
+		{"192.0.2.1", "SSH-2.0-x host:vms.example.com", ""}, // an IP is not contradicted by names
+	}
+	for _, tc := range tests {
+		if got := bannerMismatch(tc.want, tc.banner); got != tc.want_ {
+			t.Errorf("bannerMismatch(%q, %q) = %q, want %q", tc.want, tc.banner, got, tc.want_)
+		}
 	}
 }
 

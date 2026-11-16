@@ -37,6 +37,27 @@ Rules to preserve:
 - The peek is bounded (1s) so a client that says nothing is not
   mistaken for SSH and the tunnel never hangs.
 
+## Identity gates (do not remove)
+
+Two rules decide whether a candidate is usable. Both exist because a
+router-fronted name can reach two different servers:
+
+- **ALPN gate.** A non-empty `--alpn` (default `ssh`) is a requirement,
+  not a hint: if the TLS handshake completes without negotiating one of
+  those protocols, the TLS candidate is closed at the handshake and no
+  banner is sent to it. `--alpn ''` (explicit empty) turns the gate off.
+  Do not soften this back into "try the banner anyway".
+- **Banner host declaration.** RFC 4253 §4.2 lets a server put a comment
+  after the version, and the fleet uses it to name itself:
+  `SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 host:<name>`. When a banner
+  declares hosts via `host:` or `hostname:` and none of them equals the
+  name we asked for (`--servername`, default the host), the candidate is
+  refused and the mismatch is reported. A banner that declares nothing is
+  accepted — the rule is opt-in per server.
+
+The 255 report must list each candidate's outcome, including the banner
+it answered with.
+
 ## Mode selection: `--ssh-port` is the switch
 
 `--ssh-port <n>` **is** the SSH-mode switch: naming the plain port turns on

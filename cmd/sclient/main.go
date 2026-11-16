@@ -312,14 +312,15 @@ func newSSHConfig(host string, tlsPort int, servername string, alpns []string, i
 		servername = host // an IP literal: Go omits SNI itself
 	}
 	return sshtlsproxy.Config{
-		Name:    "sclient",
-		Host:    host,
-		SSHPort: sshPort, // the flag that turned this mode on
-		TLSPort: tlsPort,
-		ALPN:    alpns,                                            // as offered; ssh mode always supplies a list
-		Timeout: time.Duration(timeoutSec * float64(time.Second)), // 0: the engine default 3s
-		Silent:  silent,
-		Verbose: verbose,
+		Name:       "sclient",
+		Host:       host,
+		ServerName: servername, // the name the banner host check is against
+		SSHPort:    sshPort,    // the flag that turned this mode on
+		TLSPort:    tlsPort,
+		ALPN:       alpns,                                            // as offered; ssh mode always supplies a list
+		Timeout:    time.Duration(timeoutSec * float64(time.Second)), // 0: the engine default 3s
+		Silent:     silent,
+		Verbose:    verbose,
 		TLS: &tls.Config{
 			ServerName:         servername,
 			NextProtos:         alpns,

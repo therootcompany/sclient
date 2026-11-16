@@ -26,19 +26,20 @@ var ErrNoServer = errors.New("no usable server")
 
 // Config for one probe. Zero values take the engine defaults: ports 22/443,
 // a 3s clock, ALPN "ssh" (nil = default; explicit empty = offer no ALPN and
-// no note). Dialer nil means one bounded by the clock with 30s keep-alive;
+// no gate). Dialer nil means one bounded by the clock with 30s keep-alive;
 // TLS, when non-nil, is used as-is.
 type Config struct {
-	Name    string // used in diagnostic lines
-	Host    string
-	SSHPort int
-	TLSPort int
-	ALPN    []string
-	Timeout time.Duration
-	Verbose bool
-	Silent  bool
-	Dialer  *net.Dialer
-	TLS     *tls.Config
+	Name       string // used in diagnostic lines
+	Host       string
+	ServerName string // the name the connection is *for*; defaults to Host
+	SSHPort    int
+	TLSPort    int
+	ALPN       []string
+	Timeout    time.Duration
+	Verbose    bool
+	Silent     bool
+	Dialer     *net.Dialer
+	TLS        *tls.Config
 }
 
 // maxBannerLen: RFC 4253 section 4.2 caps the identification string at 255
@@ -77,6 +78,62 @@ func writeBanner(w io.Writer, banner string) error {
 	return err
 }
 
+// A server can name itself in the RFC 4253 section 4.2 comment, e.g.
+// "SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 host:vms.example.com". These are the
+// fields the engine reads.
+var hostFields = []string{"hostname:", "host:"}
+
+// declaredHosts returns the hosts a banner declares, or nil when it declares
+// none. The comment is everything after the first space.
+func declaredHosts(banner string) []string {
+	_, after, ok := strings.Cut(banner, " ")
+	if !ok {
+		return nil
+	}
+	var hosts []string
+	for field := range strings.FieldsSeq(after) {
+		value := hostValue(field)
+		if value == "" {
+			continue
+		}
+		for host := range strings.SplitSeq(value, ",") {
+			if host = strings.TrimSpace(host); host != "" {
+				hosts = append(hosts, host)
+			}
+		}
+	}
+	return hosts
+}
+
+// hostValue is the value of a "host:" or "hostname:" field, "" otherwise.
+// "hostname:" is tried first because "host:" is its prefix.
+func hostValue(field string) string {
+	for _, prefix := range hostFields {
+		if len(field) > len(prefix) && strings.EqualFold(field[:len(prefix)], prefix) {
+			return field[len(prefix):]
+		}
+	}
+	return ""
+}
+
+// bannerMismatch explains why a banner names a server other than the one we
+// asked for; "" means it matches or makes no claim at all. Only a declared
+// host list can refuse a candidate. An IP literal is not contradicted by a
+// name list: the banner may name any of the box's own names and still be the
+// machine we dialled.
+func bannerMismatch(want, banner string) string {
+	declared := declaredHosts(banner)
+	if want == "" || len(declared) == 0 || net.ParseIP(want) != nil {
+		return ""
+	}
+	for _, host := range declared {
+		if strings.EqualFold(host, want) {
+			return ""
+		}
+	}
+	return fmt.Sprintf("banner %q declares %s, not %q", banner, strings.Join(declared, ", "), want)
+}
+
 // minGrace is the floor for the grace a still-pending candidate gets.
 const minGrace = 150 * time.Millisecond
 
@@ -96,9 +153,10 @@ type candidate struct {
 	err       error
 	banner    string
 	bannerErr error
-	// set when TLS completed without an accepted ALPN: the connection is
-	// still tried, and the note leads the failure report if unanswered.
-	alpnNote string
+	// mismatch is non-empty when a banner declared hosts (RFC 4253 4.2) and
+	// none of them is the name we asked for: this candidate is a different
+	// server, so it is not usable.
+	mismatch string
 }
 
 // dialCandidateTCP dials one plain port. onTransport fires when the
@@ -112,14 +170,15 @@ func dialCandidateTCP(clock context.Context, cfg Config, port int, dialer *net.D
 		c.err = dialError(err, time.Since(start), clock)
 		return c
 	}
-	c.ready(start, conn, onTransport)
+	c.ready(start, conn)
 	return c
 }
 
 // dialCandidateTLS dials the TLS port and handshakes under the same clock.
-// ALPN is a routing hint on this fleet, not a security property: a front
-// that terminates without the required ALPN is still tried - the banner is
-// sent anyway and the note is reported only if it is not answered.
+// An ALPN list is a requirement, not a hint: a front that terminates TLS but
+// will not name a protocol we asked for has no ssh route for this name, so
+// that candidate ends at the handshake. `--alpn ""` (empty, non-nil) turns
+// the gate off for fronts that do not speak ALPN at all.
 func dialCandidateTLS(clock context.Context, cfg Config, port int, dialer *net.Dialer, tlsCfg *tls.Config, onTransport func(time.Duration)) *candidate {
 	start := time.Now()
 	c := &candidate{name: "tls", address: net.JoinHostPort(cfg.Host, strconv.Itoa(port))}
@@ -128,30 +187,36 @@ func dialCandidateTLS(clock context.Context, cfg Config, port int, dialer *net.D
 		c.err = dialError(err, time.Since(start), clock)
 		return c
 	}
+	// The socket is up: the grace clock arms here, whether the handshake
+	// below fails or the ALPN gate closes the candidate.
+	onTransport(time.Since(start))
 	tconn := tls.Client(conn, tlsCfg)
 	if err := tconn.HandshakeContext(clock); err != nil {
 		_ = conn.Close()
 		c.err = dialError(fmt.Errorf("tls %s: %w", conn.RemoteAddr(), err), time.Since(start), clock)
 		return c
 	}
-	if p := tconn.ConnectionState().NegotiatedProtocol; len(cfg.ALPN) > 0 && !slices.Contains(cfg.ALPN, p) {
+	proto := tconn.ConnectionState().NegotiatedProtocol
+	if len(cfg.ALPN) > 0 && !slices.Contains(cfg.ALPN, proto) {
+		_ = conn.Close() // the gate: no banner is sent to a front that is not routing ssh
 		negotiated := "(none)"
-		if p != "" {
-			negotiated = strconv.Quote(p)
+		if proto != "" {
+			negotiated = strconv.Quote(proto)
 		}
-		c.alpnNote = fmt.Sprintf("TLS negotiated ALPN %s, required one of [%s]",
-			negotiated, strings.Join(cfg.ALPN, ", "))
+		c.err = fmt.Errorf("tls %s: negotiated ALPN %s, wanted one of [%s]",
+			conn.RemoteAddr(), negotiated, strings.Join(cfg.ALPN, ", "))
+		return c
 	}
-	c.ready(start, tconn, onTransport)
+	c.ready(start, tconn)
 	return c
 }
 
-// ready marks a candidate as usable: transport up, reader armed, clock told.
-func (c *candidate) ready(start time.Time, conn net.Conn, onTransport func(time.Duration)) {
+// ready marks a candidate as usable: transport up and the reader armed.
+// onTransport already fired when the socket connected.
+func (c *candidate) ready(start time.Time, conn net.Conn) {
 	c.conn = conn
 	c.r = bufio.NewReaderSize(conn, 32*1024)
 	c.elapsed = time.Since(start)
-	onTransport(c.elapsed)
 }
 
 // errProbeClock marks a cancel that came from the probe clock - the timeout
@@ -187,6 +252,9 @@ func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 	}
 	if cfg.ALPN == nil {
 		cfg.ALPN = []string{"ssh"}
+	}
+	if cfg.ServerName == "" {
+		cfg.ServerName = cfg.Host
 	}
 	dialer := cfg.Dialer
 	if dialer == nil {
@@ -278,9 +346,6 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 				continue
 			}
 			ready = append(ready, c)
-			if c.alpnNote != "" {
-				debugf("dial: %s %s: %s", c.name, c.address, c.alpnNote)
-			}
 			debugf("dial: %s %s ready in %v", c.name, c.address, c.elapsed)
 		}
 	}
@@ -306,7 +371,7 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	}
 
 	// banner exchange with the same grace rule as the dials
-	exchangeBanners(clock, deadline, ready, clientBanner, debugf)
+	exchangeBanners(clock, deadline, ready, clientBanner, cfg.ServerName, debugf)
 
 	chosen := pickCandidate(ready)
 	if chosen == nil {
@@ -359,7 +424,13 @@ func closeOut(out io.Writer) {
 	}
 }
 
+// usable: the banner answered, and it did not name a different server.
+func (c *candidate) usable() bool {
+	return c.bannerErr == nil && c.mismatch == ""
+}
+
 // pickCandidate prefers the TLS-terminated connection when both answered.
+// A candidate whose banner declares a different server is not usable at all.
 func pickCandidate(ready []*candidate) *candidate {
 	var plain, tlsC *candidate
 	for _, c := range ready {
@@ -369,10 +440,10 @@ func pickCandidate(ready []*candidate) *candidate {
 			plain = c
 		}
 	}
-	if tlsC != nil && tlsC.bannerErr == nil {
+	if tlsC != nil && tlsC.usable() {
 		return tlsC
 	}
-	if plain != nil && plain.bannerErr == nil {
+	if plain != nil && plain.usable() {
 		return plain
 	}
 	return nil
@@ -382,7 +453,7 @@ func pickCandidate(ready []*candidate) *candidate {
 // each server banner. Every candidate sends exactly once, so the drain
 // below cannot block: the clock (or the caller) cancels ctx, which closes
 // the outstanding conns and makes every read return.
-func exchangeBanners(ctx context.Context, probeDeadline time.Time, ready []*candidate, clientBanner string, debugf func(string, ...any)) {
+func exchangeBanners(ctx context.Context, probeDeadline time.Time, ready []*candidate, clientBanner, want string, debugf func(string, ...any)) {
 	sent := time.Now()
 	bch := make(chan *candidate, len(ready))
 	for _, c := range ready {
@@ -395,6 +466,9 @@ func exchangeBanners(ctx context.Context, probeDeadline time.Time, ready []*cand
 			}
 			banner, err := readBanner(c.r)
 			c.banner, c.bannerErr = banner, err
+			if err == nil {
+				c.mismatch = bannerMismatch(want, banner)
+			}
 			bch <- c
 		}(c)
 	}
@@ -410,6 +484,10 @@ func exchangeBanners(ctx context.Context, probeDeadline time.Time, ready []*cand
 				continue
 			}
 			debugf("banner: %s %s answered %q", c.name, c.address, c.banner)
+			if c.mismatch != "" {
+				debugf("banner: %s %s: %s", c.name, c.address, c.mismatch)
+				continue
+			}
 			if !firstOK {
 				firstOK = true
 				d := time.Now().Add(graceFor(time.Since(sent)))
@@ -480,11 +558,13 @@ func failNoServer(cfg Config, ready, failed []*candidate, errOut io.Writer) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s: %s: no usable server\n", cfg.Name, cfg.Host)
 	for _, c := range ready {
-		if c.alpnNote != "" {
-			fmt.Fprintf(&b, "  %s %s: %s: %v\n", c.name, c.address, c.alpnNote, c.bannerErr)
-			continue
+		switch {
+		case c.bannerErr != nil:
+			fmt.Fprintf(&b, "  %s %s: %v\n", c.name, c.address, c.bannerErr)
+		default:
+			// answered the banner, but declared a server that is not the one asked for
+			fmt.Fprintf(&b, "  %s %s: %s\n", c.name, c.address, c.mismatch)
 		}
-		fmt.Fprintf(&b, "  %s %s: %v\n", c.name, c.address, c.bannerErr)
 	}
 	for _, c := range failed {
 		fmt.Fprintf(&b, "  %s %s: %v\n", c.name, c.address, c.err)

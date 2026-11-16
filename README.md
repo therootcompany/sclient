@@ -219,15 +219,33 @@ Host *
   line shows; the 255 exit status always propagates. Run the proxy
   standalone, or ssh with `-o ControlPath=none` (or `-o
   ControlPersist=no`, or `-v`), for the message on plain stderr.
-- **Host keys / which server answers:** behind these routers, 443 (SNI +
-  ALPN) and 22 can be served by *different* backends — on a tenant name,
-  443 is the intended server while 22 is the router's own ssh. Each
-  backend has its own host key, and OpenSSH accepts only one key per
-  name, so if the path that wins changes for a name you'll get
-  `REMOTE HOST IDENTIFICATION HAS CHANGED` until you re-record the key.
-  The proxy cannot tell the backends apart; if the :22 fallback is not
-  the server you want for a given name, steer with `--ssh-port` in the
-  `ProxyCommand` line.
+- **Which server answered:** behind these routers, 443 (SNI + ALPN) and 22
+  can be served by *different* backends — on a tenant name, 443 is the
+  intended server while 22 is the router's own ssh. Each backend has its
+  own host key, and OpenSSH accepts only one key per name, so if the path
+  that wins changes for a name you'll get `REMOTE HOST IDENTIFICATION HAS
+  CHANGED` until you re-record the key. Two gates let the proxy tell the
+  backends apart instead of guessing:
+  - **The ALPN gate.** When `--alpn` names protocols (the default is
+    `ssh`) and the TLS handshake negotiates none of them, that candidate
+    is dropped at the handshake — the proxy never sends an SSH banner to
+    a front that is not routing SSH for that name. `--alpn ''` turns the
+    gate off. A consequence worth knowing: connecting to an **IP address**
+    sends no SNI, so a name-routing front has nothing to match and the
+    TLS candidate almost always fails there.
+  - **The banner's host declaration.** RFC 4253 §4.2 allows a comment
+    after the protocol version, and a front can use it to say who it is:
+    `SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 host:vms.example.com`. If a
+    candidate's banner declares hosts (`host:` or `hostname:`, comma
+    separated) and none of them is the name you asked for (`--servername`,
+    default the host; an IP literal is never contradicted by a name list),
+    that candidate is refused — a router's sshd is
+    never mistaken for a tenant's. A banner that declares nothing is
+    accepted exactly as before.
+
+  The 255 report names every candidate and why it lost: a dial or
+  handshake error, the ALPN a front negotiated, the error reading its
+  banner, or the banner it answered with and the host it declared.
 
 Flags: `--ssh-port` (default 22), `--tls-port` (default 443), `--alpn`
 (default `ssh`), `--timeout` seconds (default 3, one overall budget),
