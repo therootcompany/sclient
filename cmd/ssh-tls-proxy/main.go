@@ -120,7 +120,7 @@ func newFlagSet(cfg *sshtlsproxy.Config, raw *rawFlags) *flag.FlagSet {
 	fs.IntVar(&cfg.SSHPort, "ssh-port", 22, "plain-SSH server port (usually %p)")
 	fs.IntVar(&cfg.TLSPort, "tls-port", 443, "TLS-terminated SSH server port")
 	fs.StringVar(&raw.alpnRaw, "alpn", "ssh", "acceptable ALPN protocols, ex: 'ssh' 'h2,http/1.1'")
-	fs.Float64Var(&raw.timeoutSec, "timeout", 3, "overall timeout in seconds")
+	fs.Float64Var(&raw.timeoutSec, "timeout", 3, "overall timeout in seconds (0 = the default, 3)")
 	fs.StringVar(&raw.serverName, "servername", "", "SNI / hostname to verify (default: <host>)")
 	fs.BoolVar(&raw.insecure, "k", false, "alias for --insecure")
 	fs.BoolVar(&raw.insecure, "insecure", false, "ignore bad TLS/SSL certificates")
@@ -188,7 +188,7 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 	}
 	if !set["timeout"] {
 		if v := os.Getenv("SSHTLSPROXY_TIMEOUT"); v != "" {
-			if tsec, err := strconv.ParseFloat(v, 64); err == nil && tsec > 0 {
+			if tsec, err := strconv.ParseFloat(v, 64); err == nil && tsec >= 0 {
 				raw.timeoutSec = tsec
 			}
 		}
@@ -217,8 +217,8 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 	}
 	cfg.Host = host
 
-	if cfg.Timeout <= 0 {
-		fmt.Fprintf(os.Stderr, "%s: --timeout must be > 0\n", name)
+	if cfg.Timeout < 0 {
+		fmt.Fprintf(os.Stderr, "%s: --timeout must be 0 (the default, 3s) or a positive number of seconds\n", name)
 		return sshtlsproxy.Config{}, nil, false
 	}
 	if cfg.SSHPort <= 0 || cfg.TLSPort <= 0 {

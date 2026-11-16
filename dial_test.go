@@ -14,6 +14,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -174,17 +175,22 @@ func TestDialTLSDefaultsServerName(t *testing.T) {
 	}
 }
 
-// A zero Timeout imposes no deadline.
-func TestDialTLSNoTimeout(t *testing.T) {
+// A zero Timeout is not "forever": it takes the default deadline, so every
+// dial has a known limit.
+func TestDialTLSZeroTimeoutIsBounded(t *testing.T) {
 	remote := stallTLS(t)
 	tun := &Tunnel{Timeout: 0, InsecureSkipVerify: true}
-	done := make(chan error, 1)
-	go func() { _, err := tun.dialTLS(remote, tun.NextProtos); done <- err }()
-	select {
-	case err := <-done:
-		t.Fatalf("returned %v, want it to wait without a deadline", err)
-	case <-time.After(200 * time.Millisecond):
-		// still waiting: correct for an unlimited tunnel
+	start := time.Now()
+	_, err := tun.dialTLS(remote, tun.NextProtos)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("a stalled handshake must fail, not hang")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the deadline", err)
+	}
+	if elapsed < 2*time.Second || elapsed > 6*time.Second {
+		t.Fatalf("took %v, want the 3s default", elapsed)
 	}
 }
 
@@ -326,5 +332,37 @@ func TestHandleConnectionSniffsSSH(t *testing.T) {
 		}
 		_ = peer.Close() // the local side is done, so the session ends
 		<-done
+	}
+}
+
+// Verbose says what the dial negotiated; silent mode says nothing.
+func TestReportConnectVerbose(t *testing.T) {
+	remote := readyTLS(t)
+	tun := &Tunnel{Timeout: 2 * time.Second, InsecureSkipVerify: true, Verbose: true}
+	conn, err := tun.dialTLS(remote, tun.NextProtos)
+	if err != nil {
+		t.Fatalf("dialTLS: %v", err)
+	}
+	defer conn.Close()
+
+	out, err := os.CreateTemp(t.TempDir(), "verbose")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := os.Stderr
+	os.Stderr = out
+	defer func() { os.Stderr = restore; _ = out.Close() }()
+
+	tun.reportConnect(remote, conn, 20*time.Millisecond)
+	_ = out.Close()
+	line, err := os.ReadFile(out.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(line), "[verbose] "+remote) {
+		t.Fatalf("verbose line = %q, want the remote named", line)
+	}
+	if !strings.Contains(string(line), "alpn (none)") {
+		t.Fatalf("verbose line = %q, want the negotiated ALPN", line)
 	}
 }

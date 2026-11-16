@@ -43,10 +43,10 @@ func usage() {
 		"\n"+
 		"   ex: sclient example.com:443 -\n"+
 		"\n"+
-		"   ex: ssh -o ProxyCommand='sclient --ssh --ssh-port %%p %%n' example.com\n"+
+		"   ex: ssh -o ProxyCommand='sclient --ssh-port %%p %%n' example.com\n"+
 		"      (dual-port SSH probe; the local side must be an SSH client)\n"+
 		"\n"+
-		"exit codes (--ssh): 0 done, 1 failure, 2 usage, 255 no usable server\n"+
+		"exit codes (SSH mode): 0 done, 1 failure, 2 usage, 255 no usable server\n"+
 		"\n", ver())
 	flag.PrintDefaults()
 	fmt.Println()
@@ -69,7 +69,7 @@ func main() {
 	var insecure bool
 	var servername string
 	var silent bool
-	var sshMode bool
+	var verbose bool
 	var sshPort int
 	var timeoutSec float64
 
@@ -78,14 +78,26 @@ func main() {
 	flag.StringVar(&alpnList, "alpn", "", "acceptable protocols, ex: 'h2,http/1.1' 'ssh'. Unset: no ALPN is offered, except 'ssh' when the local side is an SSH client")
 	flag.BoolVar(&insecure, "k", false, "alias for --insecure")
 	flag.BoolVar(&silent, "s", false, "alias of --silent")
+	flag.BoolVar(&verbose, "v", false, "alias for --verbose")
+	flag.BoolVar(&verbose, "verbose", false, "show what each dial did (SSH mode: every candidate and its banner)")
 	flag.StringVar(&servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
 	flag.BoolVar(&insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
 	flag.BoolVar(&silent, "silent", false, "less verbose output")
-	flag.BoolVar(&sshMode, "ssh", false, "SSH mode: probe the plain (22) and TLS (443) ports at once and splice the winner; the local side must be an SSH client")
-	flag.IntVar(&sshPort, "ssh-port", 0, "plain-SSH server port, default 22 (--ssh)")
-	flag.Float64Var(&timeoutSec, "timeout", 0, "seconds to wait until a remote connection is ready to communicate (TCP connect + TLS handshake). Plain mode: default 3, 0 = no limit. --ssh: the engine's probe clock, default 3")
+	flag.IntVar(&sshPort, "ssh-port", 0, "plain-SSH port to probe alongside <remote>: turns on the dual-port SSH probe (TLS port = <remote>:<port>, default 443). 0 = plain TLS tunnel")
+	flag.Float64Var(&timeoutSec, "timeout", 0, "seconds until a remote connection is ready to communicate (TCP connect + TLS handshake share one deadline). 0 = the default, 3s. There is no unlimited mode.")
 
 	flag.Parse()
+
+	if sshPort < 0 || sshPort > 65535 {
+		fmt.Fprintf(os.Stderr, "sclient: --ssh-port %d is not a port\n", sshPort)
+		usage()
+		os.Exit(2)
+	}
+	if timeoutSec < 0 {
+		fmt.Fprintf(os.Stderr, "sclient: --timeout must be 0 (the default) or a positive number of seconds\n")
+		usage()
+		os.Exit(2)
+	}
 
 	// Visit sees only flags the operator gave, so it runs after Parse.
 	set := map[string]bool{}
@@ -112,14 +124,15 @@ func main() {
 		InsecureSkipVerify: insecure,
 		ServerName:         servername,
 		Silent:             silent,
+		Verbose:            verbose,
 		NextProtos:         alpns,
-		Timeout:            time.Duration(plainTimeout(timeoutSec, set["timeout"]) * float64(time.Second)),
+		Timeout:            time.Duration(plainTimeout(timeoutSec) * float64(time.Second)),
 	}
 
-	if sshMode {
-		// --ssh replaces the Tunnel: the engine is the transport, and runSSH
-		// only returns when the listener is shut down.
-		runSSH(remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, sshPort, timeoutSec)
+	if sshPort > 0 {
+		// --ssh-port replaces the Tunnel: the engine is the transport, and
+		// runSSH only returns when the listener is shut down.
+		runSSH(remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, verbose, sshPort, timeoutSec)
 		return
 	}
 
@@ -198,25 +211,25 @@ func localAddr(s string) (string, int, error) {
 	return host, p, nil
 }
 
-// defaultPlainTimeout bounds one plain (non-ssh) remote connect - TCP
+// defaultPlainTimeout bounds one plain (non-SSH) remote connect - TCP
 // connect plus TLS handshake - in seconds. OpenSSH's ConnectTimeout has no
 // default, so there is no convention to copy; 3s matches the engine's probe
 // clock and is roughly 20x the measured connect+handshake for a public host.
 const defaultPlainTimeout = 3
 
-// plainTimeout is the operator's --timeout for plain mode, or the default
-// when unset. An explicit --timeout 0 means "no limit".
-func plainTimeout(raw float64, explicit bool) float64 {
-	if explicit {
+// plainTimeout is the operator's --timeout. Zero - the default - takes the
+// default: every dial has a deadline, there is no unlimited mode.
+func plainTimeout(raw float64) float64 {
+	if raw > 0 {
 		return raw
 	}
 	return defaultPlainTimeout
 }
 
-// runSSH is the --ssh transport: the stdio pair, or every accepted local
+// runSSH is the SSH transport: the stdio pair, or every accepted local
 // connection, goes through the engine. The local side must be an SSH
 // client; it returns when Ctrl-C or SIGTERM closes the listener.
-func runSSH(remotestr, localstr, servername string, alpns []string, insecure, silent bool, sshPort int, timeoutSec float64) {
+func runSSH(remotestr, localstr, servername string, alpns []string, insecure, silent, verbose bool, sshPort int, timeoutSec float64) {
 	// Ctrl-C or SIGTERM cancels in-flight probes and sessions. Plain mode has
 	// no shutdown path, so it keeps the OS default: the signal ends the
 	// process.
@@ -229,7 +242,7 @@ func runSSH(remotestr, localstr, servername string, alpns []string, insecure, si
 		usage()
 		os.Exit(2)
 	}
-	cfg := newSSHConfig(host, tlsPort, servername, alpns, insecure, silent, sshPort, timeoutSec)
+	cfg := newSSHConfig(host, tlsPort, servername, alpns, insecure, silent, verbose, sshPort, timeoutSec)
 
 	if localstr == "-" || localstr == "|" {
 		err := sshtlsproxy.Probe(ctx, cfg, os.Stdin, os.Stdout, os.Stderr)
@@ -283,18 +296,19 @@ func sshListen(ctx context.Context, cfg sshtlsproxy.Config, ln net.Listener, err
 // newSSHConfig builds the engine config from an already-parsed host and
 // TLS port. The engine uses a supplied tls.Config as-is, so the TLS 1.2
 // floor comes from here.
-func newSSHConfig(host string, tlsPort int, servername string, alpns []string, insecure, silent bool, sshPort int, timeoutSec float64) sshtlsproxy.Config {
+func newSSHConfig(host string, tlsPort int, servername string, alpns []string, insecure, silent, verbose bool, sshPort int, timeoutSec float64) sshtlsproxy.Config {
 	if servername == "" {
 		servername = host // an IP literal: Go omits SNI itself
 	}
 	return sshtlsproxy.Config{
 		Name:    "sclient",
 		Host:    host,
-		SSHPort: sshPort, // 0: the engine default 22
+		SSHPort: sshPort, // the flag that turned this mode on
 		TLSPort: tlsPort,
 		ALPN:    alpns,                                            // as offered; ssh mode always supplies a list
 		Timeout: time.Duration(timeoutSec * float64(time.Second)), // 0: the engine default 3s
 		Silent:  silent,
+		Verbose: verbose,
 		TLS: &tls.Config{
 			ServerName:         servername,
 			NextProtos:         alpns,

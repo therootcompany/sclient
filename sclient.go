@@ -24,10 +24,15 @@ type Tunnel struct {
 	NextProtos         []string
 	ServerName         string
 	Silent             bool
-	// Timeout bounds one remote connection: TCP connect plus TLS
-	// handshake under a single deadline. Zero means no limit.
+	Verbose            bool
+	// Timeout bounds one remote connection: TCP connect plus TLS handshake
+	// under a single deadline. Zero takes the default; every dial has a
+	// deadline, there is no unlimited mode.
 	Timeout time.Duration
 }
+
+// defaultConnectTimeout is the deadline when the caller does not name one.
+const defaultConnectTimeout = 3 * time.Second
 
 // sshPrefix is the opening of the RFC 4253 section 4.2 identification
 // string - OpenSSH sends "SSH-2.0-OpenSSH_9.6\r\n" as its very first bytes.
@@ -80,20 +85,21 @@ func (t *Tunnel) tlsConfig(host string, alpn []string) *tls.Config {
 	}
 }
 
-// dialTLS connects and handshakes under one Deadline; a zero Timeout is
-// unlimited. The returned connection is ready to communicate.
+// dialTLS connects and handshakes under one Deadline; a zero Timeout takes
+// the default. The returned connection is ready to communicate.
 func (t *Tunnel) dialTLS(remote string, alpn []string) (*tls.Conn, error) {
 	host, _, err := net.SplitHostPort(remote)
 	if err != nil {
 		return nil, fmt.Errorf("remote %q: %w", remote, err)
 	}
 	cfg := t.tlsConfig(host, alpn)
-	if t.Timeout <= 0 {
-		return tls.Dial("tcp", remote, cfg) // no deadline, no dialer
+	timeout := t.Timeout
+	if timeout <= 0 {
+		timeout = defaultConnectTimeout
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), t.Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	d := &net.Dialer{Timeout: t.Timeout, KeepAlive: 30 * time.Second}
+	d := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", remote)
 	if err != nil {
 		return nil, err
@@ -106,15 +112,31 @@ func (t *Tunnel) dialTLS(remote string, alpn []string) (*tls.Conn, error) {
 	return tc, nil
 }
 
+// reportConnect says what a dial actually negotiated, when the operator asked
+// for more than the bare "connected" line.
+func (t *Tunnel) reportConnect(remote string, conn *tls.Conn, elapsed time.Duration) {
+	if !t.Verbose {
+		return
+	}
+	protocol := "(none)"
+	if p := conn.ConnectionState().NegotiatedProtocol; p != "" {
+		protocol = strconv.Quote(p)
+	}
+	fmt.Fprintf(os.Stderr, "[verbose] %s: tls %s, alpn %s, ready in %s\n",
+		remote, conn.RemoteAddr(), protocol, elapsed.Round(10*time.Millisecond))
+}
+
 // DialAndListen will create a test TLS connection to the remote address and then
 // begin listening locally. Each local connection will result in a separate remote connection.
 func (t *Tunnel) DialAndListen() error {
 	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
+	start := time.Now()
 	conn, err := t.dialTLS(remote, t.NextProtos)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
 	} else {
+		t.reportConnect(remote, conn, time.Since(start))
 		_ = conn.Close()
 	}
 
@@ -197,13 +219,14 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 	// The local side is read through a buffer so the sniffed banner is not
 	// lost: Peek does not consume, and the relay below still sees it.
 	client := bufio.NewReader(conn)
+	start := time.Now()
 	sclient, err := t.dialTLS(remote, t.alpnFor(client, conn))
-
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
 		_ = conn.Close()
 		return
 	}
+	t.reportConnect(remote, sclient, time.Since(start))
 
 	if !t.Silent {
 		if conn.RemoteAddr().Network() == "stdio" {

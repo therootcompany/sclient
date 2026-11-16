@@ -41,7 +41,7 @@ A poor man's (or Windows user's) makeshift replacement for `openssl s_client`,
 - [Examples](#examples)
 - [SSH clients (plain mode)](#ssh-clients-plain-mode)
 - [ssh-tls-proxy](#ssh-tls-proxy)
-- [sclient --ssh](#sclient---ssh)
+- [sclient SSH mode (--ssh-port)](#sclient-ssh-mode---ssh-port)
 - [Build from Source](#build-from-source)
 
 # Install
@@ -74,6 +74,8 @@ sclient [flags] <remote> <local>
 
 - flags
   - `-s`, `--silent` less verbose logging
+  - `-v`, `--verbose` show what each dial did (SSH mode: every candidate and
+    the banner it answered with)
   - `-k`, `--insecure` ignore invalid TLS (SSL/HTTPS) certificates
   - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
     not use this option)
@@ -81,6 +83,11 @@ sclient [flags] <remote> <local>
     Unset, plain mode offers no ALPN - except `ssh`, which it sniffs from the
     local side (see [SSH clients](#ssh-clients-plain-mode)). An explicit
     `--alpn` always wins, `--alpn ''` included.
+  - `--ssh-port <n>` name the plain SSH port to probe alongside `<remote>`:
+    this is the switch that turns on the dual-port SSH probe (see
+    [SSH mode](#sclient-ssh-mode---ssh-port)). Unset: one TLS connection.
+  - `--timeout <seconds>` the deadline for a remote connection to be ready to
+    communicate. Default 3; `0` means "the default", not "unlimited".
 - remote
   - must have servername (i.e. example.com)
   - port is optional (default is 443)
@@ -99,6 +106,15 @@ sclient [flags] <remote> <local>
     	specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)
   -silent
     	less verbose output
+  -ssh-port int
+    	plain-SSH port to probe alongside <remote>; turns on the dual-port SSH
+    	probe (0 = plain TLS tunnel)
+  -timeout float
+    	seconds until a remote connection is ready to communicate (default 3;
+    	0 = the default, there is no unlimited mode)
+  -v	alias for --verbose
+  -verbose
+    	show what each dial did
   -timeout float
     	seconds until the remote is ready to communicate (default 3; 0 = no limit)
 
@@ -168,8 +184,8 @@ sclient --alpn '' example.com 3000          # offer nothing, no sniffing
 ```
 
 The peek waits at most 1s for the first bytes, so a client that says nothing
-is not mistaken for SSH. `sclient --ssh` is still the right tool when you
-want the dual-port probe; this is only about the ALPN.
+is not mistaken for SSH. The sniff only picks the ALPN; if you want the
+dual-port probe, name the plain SSH port with `--ssh-port`.
 
 # ssh-tls-proxy
 
@@ -220,27 +236,34 @@ come from
 curl -sS https://webinstall.dev/ssh-tls-proxy | bash
 ```
 
-# sclient --ssh
+# sclient SSH mode (`--ssh-port`)
 
-`sclient --ssh` is the same dual-port probe as `ssh-tls-proxy`, in the
-sclient shape: instead of a single TLS connection to `<remote>`, each
-connection goes through the `sshtlsproxy` engine — plain port (22) and
-TLS port (443, ALPN `ssh`) probed at once, the SSH identification-banner
-exchange run against whichever answer(s) arrive, the TLS-terminated
-connection preferred, and the winner spliced in.
+Naming `--ssh-port` is what turns SSH mode on - there is no `--ssh` flag.
+It is the same dual-port probe as `ssh-tls-proxy`, in the sclient shape:
+instead of a single TLS connection to `<remote>`, each connection goes
+through the `sshtlsproxy` engine - `--ssh-port` (plain TCP) and
+`<remote>:<port>` (TLS, default 443, ALPN `ssh`) probed at once, the SSH
+identification-banner exchange run against whichever answer(s) arrive, the
+TLS-terminated connection preferred, and the winner spliced in.
 
 ```bash
 # stunnel-style: a local listener for SSH clients
-sclient --ssh example.com:443 localhost:3000
+sclient --ssh-port 22 example.com:443 localhost:3000
 
-# as an ssh ProxyCommand: plain 22 and TLS 443 probed at once
-ssh -o ProxyCommand='sclient --ssh --ssh-port %p %n' example.com
+# as an ssh ProxyCommand: plain %p and TLS 443 probed at once
+ssh -o ProxyCommand='sclient --ssh-port %p %n' example.com
 ```
 
-The local side must be an SSH client: the first line of each connection
-must be an `SSH-2.0` banner. `--alpn` defaults to `ssh` in this mode
-(`--alpn ''` means "no ALPN requirement"); `--ssh-port` (default 22) is
-also available.
+The local side must be an SSH client: the first line of each connection must
+be an `SSH-` banner. `--alpn` defaults to `ssh` in this mode (`--alpn ''`
+means "no ALPN requirement"). `-v/--verbose` prints every candidate dial and
+the banner it answered with; `-s/--silent` drops the selection line.
+
+One thing to know before you use it: on a router-fronted name, `:22` and
+`:443` can be **different servers** (the router and the guest). The probe
+prefers TLS, but if TLS is unavailable you get whatever answers on the plain
+port - which may not be the machine you meant. That is why the port has to be
+named explicitly rather than detected.
 
 Exit codes: 0 done, 1 failure, 2 usage, 255 no usable server. Both
 modes accept `host`, `host:port`, or `[ipv6]:port`.
@@ -251,8 +274,9 @@ ProxyCommand with its stderr swallowed.
 
 `--timeout` is seconds until a remote connection is ready to
 communicate: the TCP connect and the TLS handshake share one deadline.
-Both modes default to 3 seconds (`--timeout 0` means no limit in plain
-mode); a connect plus TLS handshake to a public host measured 10-130 ms.
+Both modes default to 3 seconds; `--timeout 0` is the default, not "no
+limit" - every dial has a deadline. A connect plus TLS handshake to a
+public host measured 10-130 ms.
 
 # API
 
