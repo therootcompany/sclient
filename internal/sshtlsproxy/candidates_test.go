@@ -48,16 +48,14 @@ func makeTestCert() (tls.Certificate, error) {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
 }
 
-// loopbackTLSOK reports whether this environment can complete a TLS
-// handshake over loopback. Some security filters (EDR/VPN) are known to
-// break loopback TLS; the affected tests skip themselves.
+// loopbackTLSOK reports whether loopback TLS works here; some EDR/VPN
+// filters break it, and the TLS tests skip themselves when it does.
 var loopbackTLSOK = probeLoopbackTLS()
 
-// serveTLS accepts connections on a listener returned by tls.NewListener
-// and drives the handshake to completion. tls.NewListener defers the
-// handshake until the first read or write, so an accept loop that only
-// holds the connection leaves the peer hanging - which is indistinguishable
-// from "loopback TLS is blocked by the environment".
+// serveTLS drives the handshake to completion on accept: tls.NewListener
+// defers it to the first read or write, so an accept loop that just holds
+// the connection leaves the peer hanging - indistinguishable from a
+// blocked environment.
 func serveTLS(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
@@ -98,9 +96,8 @@ func probeLoopbackTLS() bool {
 	return true
 }
 
-// The probe's clock is the only thing that cancels a dial, so Go's
-// "operation was canceled" must be reported as a timeout with the elapsed
-// time; otherwise a 3s blackhole reads like someone pulled the plug.
+// The probe clock is the only cancel, so "operation was canceled" must
+// read as a timeout with the elapsed time.
 func TestDialErrorTimeoutWording(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 0)
 	defer cancel()
@@ -131,8 +128,7 @@ func TestDialErrorRefusedPortWording(t *testing.T) {
 	}
 }
 
-// noopTransport satisfies the transport-up callback in tests that do
-// not exercise the grace clock.
+// noopTransport satisfies the transport-up callback where grace is untested.
 var noopTransport = func(time.Duration) {}
 
 func TestDialCandidatePlain(t *testing.T) {
@@ -256,8 +252,7 @@ func TestDialCandidateTLS(t *testing.T) {
 	}
 }
 
-// serveAt starts a TLS listener on loopback with the given advertised ALPN
-// list and returns its port.
+// serveAt starts a loopback TLS listener advertising the given ALPN.
 func serveAt(t *testing.T, cert tls.Certificate, alpn []string) int {
 	t.Helper()
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
@@ -290,9 +285,7 @@ func splitPort(addr string) (int, string) {
 	return p, host
 }
 
-// TestResolvedDefaults pins the engine defaults: ports, clock, ALPN "ssh"
-// (this is an SSH proxy), and the default tls.Config when the caller
-// supplies none.
+// TestResolvedDefaults pins the engine defaults.
 func TestResolvedDefaults(t *testing.T) {
 	got, dialer, tlsCfg := Config{Host: "example.com"}.resolved()
 	if got.SSHPort != 22 || got.TLSPort != 443 {

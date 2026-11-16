@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// bannerServer accepts connections, reads the client banner, writes its
-// own banner (plus optional extra bytes in the same write, as OpenSSH
-// glues a KEXINIT to its banner), then echoes lines until "BYE".
+// bannerServer reads the client banner, replies with its own banner (plus
+// optional extra bytes in the same write, like OpenSSH's glued KEXINIT),
+// then echoes lines until "BYE".
 func startBannerServer(t *testing.T, banner, extra, alpn string, cert *tls.Certificate) string {
 	t.Helper()
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
@@ -41,8 +41,7 @@ func startBannerServer(t *testing.T, banner, extra, alpn string, cert *tls.Certi
 				if _, err := readBanner(r); err != nil {
 					return
 				}
-				// Banner plus extra bytes in one write (as OpenSSH
-				// glues a KEXINIT to its banner).
+				// banner + extra in one write, like a glued KEXINIT
 				if extra != "" {
 					if _, err := io.WriteString(c, banner+"\r\n"+extra+"\r\n"); err != nil {
 						return
@@ -70,13 +69,11 @@ func startBannerServer(t *testing.T, banner, extra, alpn string, cert *tls.Certi
 	return inner.Addr().String()
 }
 
-// runClient plays the ssh client side of a ProxyCommand: it sends its
-// banner, talks to whichever server the probe chose, and returns what it
-// saw. errOut is where the probe's diagnostics go. err is Probe's return
-// value.
+// runClient plays the ssh client side of a ProxyCommand: sends its banner,
+// talks to whichever server the probe chose, and returns what it saw.
 func runClient(t *testing.T, cfg Config, errOut io.Writer) (err error, lines []string) {
 	t.Helper()
-	// One pipe per direction: client->probe and probe->client.
+	// one pipe per direction
 	c2p, pIn := net.Pipe()
 	pOut, p2c := net.Pipe()
 	done := make(chan error, 1)
@@ -179,10 +176,9 @@ func TestRunPickSSHWhenTLSDown(t *testing.T) {
 	}
 }
 
-// TestRunPickTLSWithoutALPN: the TLS front terminates without the ALPN and
-// the plain port answers too. The banner is still sent over the TLS side
-// and, when it is answered, that connection wins: behind a tenant front the
-// plain port is a different server (the TLS router's own sshd).
+// TestRunPickTLSWithoutALPN: the TLS front has no ALPN and the plain port
+// answers too. The banner is still sent over TLS, and answering wins:
+// behind a tenant front the plain port is a different server.
 func TestRunPickTLSWithoutALPN(t *testing.T) {
 	if !loopbackTLSOK {
 		t.Skip("loopback TLS broken in this environment (see probeLoopbackTLS)")
@@ -203,9 +199,8 @@ func TestRunPickTLSWithoutALPN(t *testing.T) {
 	}
 }
 
-// TestRunNoALPNFailureMessage: the TLS front terminates without the ALPN and
-// never answers the banner; the plain port is refused. Exit 255 and the
-// diagnostic must carry the ALPN note, not just the raw read error.
+// TestRunNoALPNFailureMessage: no banner answer, plain port refused; the
+// 255 report must carry the ALPN note, not just the read error.
 func TestRunNoALPNFailureMessage(t *testing.T) {
 	if !loopbackTLSOK {
 		t.Skip("loopback TLS broken in this environment (see probeLoopbackTLS)")
@@ -237,10 +232,7 @@ func TestRunNoneDown(t *testing.T) {
 	}
 }
 
-// Intentionally NOT automated: a timing test for the blackholed-port
-// fast-fail (grace arms on transport-up, so a dropped sibling port
-// must not hold the probe to the full timeout) needs a dial that
-// never completes — loopback cannot produce one, because closed local
-// ports RST immediately and no transport-up event fires. Verified in
-// the field instead: a dead host whose TLS front lacks the ALPN fails
-// in ~200ms rather than --timeout.
+// Not automated on purpose: the blackholed-port fast-fail needs a dial that
+// never completes, and loopback cannot produce one (closed local ports RST
+// immediately, so no transport-up event fires). Verified in the field: a
+// dead host with an ALPN-less TLS front fails in ~200ms, not --timeout.

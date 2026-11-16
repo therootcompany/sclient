@@ -81,8 +81,7 @@ func main() {
 
 	flag.Parse()
 
-	// Visit reports only the flags the operator actually gave, so it
-	// runs after Parse.
+	// Visit sees only flags the operator gave, so it runs after Parse.
 	set := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
@@ -92,7 +91,7 @@ func main() {
 
 	i := flag.NArg()
 	if i != 2 {
-		// We may omit the second argument if we're going straight to stdin
+		// a missing second argument means stdio
 		if stat, _ := os.Stdin.Stat(); i == 1 && (stat.Mode()&os.ModeCharDevice) == 0 {
 			localstr = "|"
 		} else {
@@ -112,7 +111,7 @@ func main() {
 	}
 
 	if sshMode {
-		// --ssh: the engine IS the transport; the Tunnel is unused.
+		// --ssh replaces the Tunnel: the engine is the transport
 		runSSH(remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, sshPort, timeoutSec)
 	}
 
@@ -125,7 +124,6 @@ func main() {
 	sclient.RemoteAddress, sclient.RemotePort = remoteHost, remotePort
 
 	if localstr == "-" || localstr == "|" {
-		// User may specify stdin/stdout instead of net
 		sclient.LocalAddress = localstr
 		sclient.LocalPort = -1
 	} else {
@@ -201,9 +199,8 @@ func localAddr(s string) (string, int, error) {
 // seconds, matching ssh's ConnectTimeout convention.
 const defaultPlainTimeout = 10
 
-// plainTimeout is the operator's --timeout for plain mode, or the
-// default when the flag was not given. An explicit --timeout 0 is a
-// legitimate request for "no limit".
+// plainTimeout is the operator's --timeout for plain mode, or the default
+// when unset. An explicit --timeout 0 means "no limit".
 func plainTimeout(raw float64, explicit bool) float64 {
 	if explicit {
 		return raw
@@ -211,11 +208,9 @@ func plainTimeout(raw float64, explicit bool) float64 {
 	return defaultPlainTimeout
 }
 
-// runSSH is the --ssh transport: the stdio pair, or every connection
-// accepted from the local listener, goes through the sshtlsproxy
-// engine — dual-port probe, banner exchange, splice. The local side
-// must be an SSH client: its first line must be an SSH-2.0 banner.
-// It never returns.
+// runSSH is the --ssh transport: the stdio pair, or every accepted local
+// connection, goes through the engine. The local side must be an SSH
+// client. It never returns.
 func runSSH(remotestr, localstr, servername string, alpns []string, insecure, silent bool, sshPort int, timeoutSec float64) {
 	host, tlsPort, err := remoteAddr(remotestr, 443)
 	if err != nil {
@@ -247,8 +242,7 @@ func runSSH(remotestr, localstr, servername string, alpns []string, insecure, si
 	sshListen(cfg, ln, os.Stderr)
 }
 
-// sshListen serves --ssh connections on ln until the listener is
-// closed; each connection gets its own probe.
+// sshListen gives each accepted connection its own probe.
 func sshListen(cfg sshtlsproxy.Config, ln net.Listener, errOut io.Writer) {
 	for {
 		conn, err := ln.Accept()
@@ -261,10 +255,9 @@ func sshListen(cfg sshtlsproxy.Config, ln net.Listener, errOut io.Writer) {
 	}
 }
 
-// newSSHConfig builds the engine config for one --ssh target from an
-// already-parsed host and TLS port. The caller's *tls.Config is used
-// as-is by the engine, so the TLS 1.2 floor comes from here, not the
-// engine default.
+// newSSHConfig builds the engine config from an already-parsed host and
+// TLS port. The engine uses a supplied tls.Config as-is, so the TLS 1.2
+// floor comes from here.
 func newSSHConfig(host string, tlsPort int, servername string, alpns []string, insecure, silent bool, sshPort int, timeoutSec float64) sshtlsproxy.Config {
 	if servername == "" {
 		servername = host // an IP literal: Go omits SNI itself
@@ -286,25 +279,20 @@ func newSSHConfig(host string, tlsPort int, servername string, alpns []string, i
 	}
 }
 
-// sshALPN resolves --alpn for --ssh mode: an unset flag takes the
-// engine default [ssh] (made explicit here because the caller
-// supplies the tls.Config); an explicit list is as given; an explicit
-// --alpn ” means no ALPN requirement (non-nil empty: nothing
-// offered, no note).
+// sshALPN resolves --alpn for --ssh mode: unset takes [ssh], an explicit
+// list is as given, an explicit empty list means no ALPN requirement.
 func sshALPN(raw string, explicit bool) []string {
 	a := parseOptionList(raw)
-	if explicit && nil == a {
-		a = []string{}
+	if explicit && a == nil {
+		return []string{}
 	}
-	if nil == a {
-		a = []string{"ssh"}
+	if a == nil {
+		return []string{"ssh"}
 	}
 	return a
 }
 
-// exitSSH maps the engine result to an exit code: 0 done, 255 no
-// usable server (ssh convention; the diagnostic report is already on
-// stderr), 1 client-side failure.
+// exitSSH: 0 done, 255 no usable server (ssh convention), 1 client-side failure.
 func exitSSH(host string, err error) {
 	switch {
 	case nil == err:

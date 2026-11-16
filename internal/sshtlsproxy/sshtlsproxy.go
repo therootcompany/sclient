@@ -1,10 +1,8 @@
-// Package sshtlsproxy is the dual-port SSH proxy engine: it dials a
-// host's plain-SSH port and its TLS-terminated port simultaneously, runs
-// the RFC 4253 section 4.2 banner exchange against whichever answer(s)
-// arrive, prefers the TLS-terminated connection, and splices the caller's
-// streams onto the winner. The simultaneous probe with the banner
-// exchange is the point of the package; a try-one-port-then-fallback is
-// a different (weaker) tool.
+// Package sshtlsproxy dials a host's plain-SSH and TLS-terminated ports
+// at once, runs the RFC 4253 section 4.2 banner exchange against
+// whichever answer(s) arrive, prefers the TLS connection, and splices the
+// caller's streams onto the winner. The simultaneous probe is the point;
+// a try-one-port-then-fallback is a different, weaker tool.
 package sshtlsproxy
 
 import (
@@ -22,24 +20,16 @@ import (
 	"time"
 )
 
-// ErrNoServer is returned by Probe when neither candidate answers the
-// banner exchange. The diagnostic report is written to errOut before it
-// is returned.
+// ErrNoServer means neither candidate answered the banner exchange; the
+// diagnostic report is already on errOut.
 var ErrNoServer = errors.New("no usable server")
 
-// Config is the configuration for one probe. Zero values take the
-// engine defaults: ports 22/443, a 3s overall clock, ALPN "ssh" (this
-// is an SSH proxy). ALPN nil means the default; an explicitly empty
-// list means the caller wants no ALPN (nothing offered, no note).
-// Dialer nil means the engine's default dialer: each connect bounded by
-// the probe clock, 30s TCP keep-alive. TLS is the caller's
-// *tls.Config, used as-is when non-nil; when nil the engine builds the
-// default: ServerName = Host, NextProtos = ALPN, MinVersion TLS 1.2.
-// ALPN is also used for the diagnostic note when the negotiated
-// protocol is outside it.
+// Config for one probe. Zero values take the engine defaults: ports 22/443,
+// a 3s clock, ALPN "ssh" (nil = default; explicit empty = offer no ALPN and
+// no note). Dialer nil means one bounded by the clock with 30s keep-alive;
+// TLS, when non-nil, is used as-is.
 type Config struct {
-	// Name is the tool name used in diagnostic lines; the caller sets it.
-	Name    string
+	Name    string // used in diagnostic lines
 	Host    string
 	SSHPort int
 	TLSPort int
@@ -51,22 +41,18 @@ type Config struct {
 	TLS     *tls.Config
 }
 
-// maxBannerLen is the limit for an SSH protocol identification string
-// (RFC 4253 section 4.2: "The maximum length of this string is 255
-// characters, not including the location-dependent CR and LF").
+// maxBannerLen: RFC 4253 section 4.2 caps the identification string at 255
+// characters, excluding CRLF.
 const maxBannerLen = 255
 
 var errNotSSHBanner = errors.New("not an SSH identification banner")
 
-// readBanner reads one SSH identification line from r and returns the
-// banner text (terminator stripped). It is bounded: at most
-// maxBannerLen+2 bytes are consumed, so a peer that never sends a
-// newline cannot make it buffer forever. Bytes read beyond the line
-// terminator (e.g. a KEXINIT glued to the server banner) remain
-// buffered in r for the caller to relay.
+// readBanner reads one identification line, bounded so a peer that never
+// sends a newline cannot buffer forever. Bytes past the terminator (a
+// glued KEXINIT) stay in r for the caller to relay.
 func readBanner(r *bufio.Reader) (string, error) {
 	var sb strings.Builder
-	for range maxBannerLen + 2 { // at most 255 chars + CRLF
+	for range maxBannerLen + 2 {
 		b, err := r.ReadByte()
 		if err != nil {
 			return "", fmt.Errorf("read banner: %w", err)
@@ -86,48 +72,39 @@ func readBanner(r *bufio.Reader) (string, error) {
 	return "", fmt.Errorf("banner too long: more than %d bytes", maxBannerLen)
 }
 
-// writeBanner sends the given identification line, CRLF-terminated.
 func writeBanner(w io.Writer, banner string) error {
 	_, err := io.WriteString(w, banner+"\r\n")
 	return err
 }
 
-// minGrace is the floor for the extra time a still-pending candidate
-// gets after the first transport comes up.
+// minGrace is the floor for the grace a still-pending candidate gets.
 const minGrace = 150 * time.Millisecond
 
-// graceFor returns the extra time to allow a still-pending candidate
-// after the first transport comes up: half the elapsed time since both
-// dials started, floored at minGrace. Example: first connects in
-// 300ms, the other has an additional 150ms.
+// graceFor is half the elapsed time since the dials started, floored at
+// minGrace.
 func graceFor(elapsed time.Duration) time.Duration {
 	return max(elapsed/2, minGrace)
 }
 
 // candidate is one attempt to reach the server.
 type candidate struct {
-	name    string // "ssh" or "tls"
-	address string
-	conn    net.Conn
-	// r reads from conn; it preserves read-ahead (e.g. a KEXINIT
-	// glued to the server banner) for the splice.
-	r         *bufio.Reader
-	elapsed   time.Duration // dial start until settled
+	name      string // "ssh" or "tls"
+	address   string
+	conn      net.Conn
+	r         *bufio.Reader // keeps read-ahead (glued KEXINIT) for the splice
+	elapsed   time.Duration
 	err       error
-	banner    string // server banner, once read
+	banner    string
 	bannerErr error
-	// alpnNote is set when TLS completed without an accepted ALPN
-	// protocol. The connection is still tried — the banner may be
-	// answered — and the note is part of the failure report when it
-	// is not.
+	// set when TLS completed without an accepted ALPN: the connection is
+	// still tried, and the note leads the failure report if unanswered.
 	alpnNote string
 }
 
-// dialCandidate dials one candidate. onTransport reports when the
-// transport is up (TCP connected; for TLS, handshake completed) with
-// the elapsed time — the grace clock arms on that event, so a
-// blackholed sibling port cannot hold the probe out to the full timeout.
-// A nil tlsCfg means the plain-SSH candidate.
+// dialCandidate dials one port. onTransport fires when the transport is
+// up (TCP connected; for TLS, handshake done) - the grace clock arms on
+// that event, so a blackholed sibling port cannot hold the probe to the
+// full timeout. A nil tlsCfg means the plain-SSH candidate.
 func dialCandidate(ctx context.Context, cfg Config, port int, kind string, dialer *net.Dialer, tlsCfg *tls.Config, onTransport func(time.Duration)) *candidate {
 	start := time.Now()
 	c := &candidate{name: kind, address: net.JoinHostPort(cfg.Host, strconv.Itoa(port))}
@@ -141,12 +118,10 @@ func dialCandidate(ctx context.Context, cfg Config, port int, kind string, diale
 			tlsConn := conn.(*tls.Conn)
 			p := tlsConn.ConnectionState().NegotiatedProtocol
 			if len(cfg.ALPN) > 0 && !slices.Contains(cfg.ALPN, p) {
-				// The front terminated TLS without the accepted protocol.
-				// It may still be forwarding to the sshd (ALPN is a
-				// routing hint on this fleet, not a security property),
-				// so the connection is kept and the banner sent — there
-				// is no loss in trying, and the note is reported if the
-				// banner is not answered.
+				// ALPN is a routing hint on this fleet, not a security
+				// property: a front that terminates without it may still
+				// forward to sshd, so the banner is sent anyway and the
+				// note is reported only if it is not answered.
 				negotiated := "(none)"
 				if p != "" {
 					negotiated = strconv.Quote(p)
@@ -166,10 +141,8 @@ func dialCandidate(ctx context.Context, cfg Config, port int, kind string, diale
 	return c
 }
 
-// dialError replaces Go's "operation was canceled" with what actually
-// happened. In this program the context is only ever canceled by the probe's
-// own clock - the overall --timeout or the grace window - so a canceled dial
-// is a timeout, and the elapsed time is worth reporting.
+// dialError renames Go's "operation was canceled": the only cancel here
+// is the probe clock, so a canceled dial is a timeout worth reporting.
 func dialError(err error, elapsed time.Duration) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("timed out after %s", elapsed.Round(10*time.Millisecond))
@@ -177,8 +150,7 @@ func dialError(err error, elapsed time.Duration) error {
 	return err
 }
 
-// tlsHandshake completes the TLS handshake with the caller's config.
-// ALPN policy is checked by the caller, after the transport-up report.
+// tlsHandshake completes the handshake; ALPN policy is the caller's job.
 func tlsHandshake(ctx context.Context, conn net.Conn, tlsCfg *tls.Config) (*tls.Conn, error) {
 	tlsConn := tls.Client(conn, tlsCfg)
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
@@ -188,9 +160,7 @@ func tlsHandshake(ctx context.Context, conn net.Conn, tlsCfg *tls.Config) (*tls.
 	return tlsConn, nil
 }
 
-// resolved fills in the engine defaults: ports 22/443, a 3s clock,
-// ALPN "ssh", a default dialer, and the default tls.Config when the
-// caller did not supply one.
+// resolved fills in the engine defaults.
 func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 	if cfg.SSHPort == 0 {
 		cfg.SSHPort = 22
@@ -222,11 +192,9 @@ func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 	return cfg, dialer, tlsCfg
 }
 
-// Probe drives one connection attempt. It returns nil when a session
-// completed through the splice, ErrNoServer when neither candidate is
-// usable (the diagnostic report is already on errOut), or another error
-// for a client-side failure. The caller supplies the root context; Probe
-// derives its probe clock from it.
+// Probe returns nil when a session completed through the splice,
+// ErrNoServer when neither candidate is usable, or a client-side error.
+// The caller supplies the root context; Probe derives its own clock.
 func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut io.Writer) error {
 	cfg, dialer, tlsCfg := cfg.resolved()
 	debugf := func(format string, args ...any) {
@@ -240,9 +208,8 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	timer := time.AfterFunc(cfg.Timeout, cancel)
 	defer cancel()
 
-	// Phase 0: client banner. The client MUST wait for the server
-	// banner before proceeding (RFC 4253 4.2), so intercepting one
-	// line is safe; nothing else is in flight on the client side.
+	// Intercepting exactly one client line is safe: the client waits for
+	// the server banner before sending anything else (RFC 4253 4.2).
 	clientIn := bufio.NewReaderSize(in, 32*1024)
 	clientDone := make(chan clientResult, 1)
 	go func() {
@@ -250,7 +217,7 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 		clientDone <- clientResult{banner, err}
 	}()
 
-	// Phase 1: connect to both candidates at once.
+	// dial both ports at once
 	res := make(chan *candidate, 2)
 	up := make(chan time.Duration, 2)
 	go func() {
@@ -266,12 +233,9 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	settled := 0
 	for settled < 2 {
 		select {
-		// First transport up arms the grace: the other side then has
-		// max(150ms, half this elapsed time), clamped to the overall
-		// deadline. Arming on transport-up — not on a ready candidate
-		// — is what keeps a blackholed sibling port from holding the
-		// probe out to the full timeout when no candidate can become
-		// ready (e.g. TLS front with no route, plain port blackholed).
+		// Arming the grace on transport-up - not on a ready candidate - is
+		// what keeps a blackholed sibling from holding the probe to the
+		// full timeout when nothing can become ready.
 		case el := <-up:
 			if !graceArmed {
 				graceArmed = true
@@ -297,9 +261,7 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	}
 
 	clientBanner, clientErr := takeClientResult(clientDone, ctx)
-	// The probe clock is done; the banner phase below runs on
-	// connection deadlines, and the splice runs on none at all.
-	timer.Stop()
+	timer.Stop() // banner phase uses per-conn deadlines; the splice uses none
 	if clientErr != nil {
 		for _, c := range ready {
 			_ = c.conn.Close()
@@ -318,8 +280,7 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 		return ErrNoServer
 	}
 
-	// Phase 2: banner exchange. Send the client banner to every ready
-	// candidate and read each server banner, with the same grace rule.
+	// banner exchange with the same grace rule as the dials
 	probeDeadline := start.Add(cfg.Timeout)
 	exchangeBanners(probeDeadline, ready, clientBanner, debugf)
 
@@ -342,14 +303,13 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	return nil
 }
 
-// clientResult is the outcome of reading the client banner.
 type clientResult struct {
 	banner string
 	err    error
 }
 
-// takeClientResult waits for the client banner or context expiration,
-// draining the buffered result first so a ready banner is never dropped.
+// takeClientResult returns the banner, preferring a result already in the
+// buffer over the clock's error.
 func takeClientResult(clientDone <-chan clientResult, ctx context.Context) (string, error) {
 	select {
 	case cr := <-clientDone:
@@ -364,8 +324,7 @@ func takeClientResult(clientDone <-chan clientResult, ctx context.Context) (stri
 	}
 }
 
-// closeOut closes out if it is a Closer, so a client waiting on the
-// pipe sees EOF when we give up.
+// closeOut lets a client waiting on the pipe see EOF when we give up.
 func closeOut(out io.Writer) {
 	if c, ok := out.(io.Closer); ok {
 		_ = c.Close()
@@ -392,11 +351,8 @@ func pickCandidate(ready []*candidate) *candidate {
 }
 
 // exchangeBanners writes the client banner to every candidate and reads
-// each server banner under the same grace rule as the dials: the first
-// answer gives the rest max(150ms, half the elapsed time), clamped to the
-// overall deadline. Every candidate comes back with either a banner or a
-// bannerErr; a candidate still pending when the deadline passes is drained,
-// never waited on.
+// each server banner. Every candidate sends exactly once, so the drain
+// below cannot block.
 func exchangeBanners(probeDeadline time.Time, ready []*candidate, clientBanner string, debugf func(string, ...any)) {
 	sent := time.Now()
 	bch := make(chan *candidate, len(ready))
@@ -438,7 +394,6 @@ func exchangeBanners(probeDeadline time.Time, ready []*candidate, clientBanner s
 				}
 			}
 		case <-stopAt.C:
-			// Each goroutine sends exactly once, so this cannot block.
 			for len(remaining) > 0 {
 				remaining = removeCandidate(remaining, <-bch)
 			}
@@ -453,13 +408,11 @@ func removeCandidate(list []*candidate, c *candidate) []*candidate {
 	return list
 }
 
-// splice hands the client over to c and pumps both directions until the
-// server closes. The server banner (already read) plus any buffered
-// read-ahead are the first bytes the client sees. The interception
-// machinery ends here: from this point on the proxy is a dumb pipe.
+// splice pumps both directions until the server closes. The banner and
+// any buffered read-ahead are the first bytes the client sees; after this
+// the proxy is a dumb pipe.
 func splice(c *candidate, clientIn *bufio.Reader, out io.Writer) {
-	// Sessions go idle; no more timers.
-	_ = c.conn.SetDeadline(time.Time{})
+	_ = c.conn.SetDeadline(time.Time{}) // sessions go idle
 
 	var drained sync.WaitGroup
 	drained.Go(func() {
@@ -468,18 +421,12 @@ func splice(c *candidate, clientIn *bufio.Reader, out io.Writer) {
 	})
 	_, _ = io.Copy(c.conn, clientIn)
 	_ = c.conn.Close()
-	drained.Wait() // let the server->client pump drain before we go
+	drained.Wait() // drain the server->client pump before returning
 }
 
-// failNoServer reports that neither candidate is usable. The message
-// goes to errOut and nowhere else: the caller picks the destination.
-// A command whose stderr OpenSSH has redirected to /dev/null
-// (ControlPath + valued ControlPersist; since 8.0) can pass
-// StderrOrTTY so the report also reaches the controlling terminal,
-// which is still reachable because the proxy is forked before the
-// master daemon()s. Under a client with no terminal the exit status
-// (255) is what always propagates; -o ControlPath=none,
-// -o ControlPersist=no, or -v keeps the message on plain stderr.
+// failNoServer writes the report to errOut and nowhere else; the caller
+// picks the destination. ssh can null a ProxyCommand's stderr (ControlPath
+// + valued ControlPersist, since 8.0); StderrOrTTY works around that.
 func failNoServer(cfg Config, ready, failed []*candidate, errOut io.Writer) {
 	if cfg.Silent {
 		return

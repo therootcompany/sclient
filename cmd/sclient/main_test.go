@@ -10,9 +10,8 @@ import (
 	"time"
 )
 
-// signalWriter records writes and closes sig once the first write
-// completes: the probe's failure report is a single Fprint, so the
-// signal means the report is fully in the buffer.
+// signalWriter closes sig on its first write. The probe's report is a
+// single Fprint, so the signal means the buffer is complete.
 type signalWriter struct {
 	buf  bytes.Buffer
 	sig  chan struct{}
@@ -152,7 +151,7 @@ func TestLocalAddr(t *testing.T) {
 	}
 }
 
-// freePort returns a TCP port on loopback that is (just) not listening.
+// freePort returns a loopback port that is not listening.
 func freePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -164,9 +163,8 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// The listener mode: a local SSH client hitting a host where neither
-// port answers gets EOF and the report lands on the probe's errOut.
-// Fully offline: both target ports are refused on loopback.
+// Listener mode, offline: both target ports are refused on loopback, so
+// the client gets EOF and the report lands on the probe's errOut.
 func TestSSHListenerNoServer(t *testing.T) {
 	cfg := newSSHConfig("127.0.0.1", freePort(t), "", []string{"ssh"}, false, false, freePort(t), 0)
 	cfg.Timeout = 2 * time.Second
@@ -194,8 +192,7 @@ func TestSSHListenerNoServer(t *testing.T) {
 		t.Fatal("expected EOF from a dead target, got data")
 	}
 
-	// Wait for the report write to complete, then read the buffer:
-	// channel sync, no race on the buffer itself.
+	// channel sync: no race on the buffer itself
 	select {
 	case <-sw.sig:
 	case <-time.After(5 * time.Second):

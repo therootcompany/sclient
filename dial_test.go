@@ -15,8 +15,7 @@ import (
 	"time"
 )
 
-// stallTLS listens for TCP connections and accepts them but never
-// completes the TLS handshake: the handshake deadline must fire.
+// stallTLS accepts TCP but never handshakes, so the deadline must fire.
 func stallTLS(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -36,7 +35,6 @@ func stallTLS(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-// selfSigned mints a throwaway certificate for loopback tests.
 func selfSigned(t *testing.T) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -56,10 +54,9 @@ func selfSigned(t *testing.T) tls.Certificate {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
-// readyTLS serves a real handshake. A TLS listener defers the
-// handshake to the first read or write, so the accept loop must
-// complete it explicitly (as the engine's serveTLS does) or the
-// client never sees a ServerHello and times out.
+// readyTLS serves a real handshake. A TLS listener defers the handshake
+// to the first read or write, so the accept loop must complete it
+// explicitly or the client never sees a ServerHello.
 func readyTLS(t *testing.T) string {
 	t.Helper()
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
@@ -81,8 +78,7 @@ func readyTLS(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-// The dialer is never bare: the Timeout bounds connect and resolution,
-// and keep-alive is explicit.
+// The dialer is never bare: Timeout bounds the connect, keep-alive is set.
 func TestTunnelDialer(t *testing.T) {
 	d := (&Tunnel{Timeout: 2 * time.Second}).dialer()
 	if d.Timeout != 2*time.Second || d.KeepAlive != 30*time.Second {
@@ -94,8 +90,8 @@ func TestTunnelDialer(t *testing.T) {
 	}
 }
 
-// One deadline across connect + handshake: a server that accepts TCP
-// but never handshakes must fail at the Timeout, not hang.
+// One deadline covers connect + handshake: a server that accepts TCP but
+// never handshakes fails at the Timeout instead of hanging.
 func TestDialTLSStalledHandshake(t *testing.T) {
 	remote := stallTLS(t)
 	tun := &Tunnel{Timeout: 300 * time.Millisecond, InsecureSkipVerify: true}
@@ -112,7 +108,7 @@ func TestDialTLSStalledHandshake(t *testing.T) {
 	}
 }
 
-// A zero Timeout keeps the old behavior: no deadline is imposed.
+// A zero Timeout imposes no deadline.
 func TestDialTLSNoTimeout(t *testing.T) {
 	remote := stallTLS(t)
 	tun := &Tunnel{Timeout: 0, InsecureSkipVerify: true}
@@ -126,8 +122,7 @@ func TestDialTLSNoTimeout(t *testing.T) {
 	}
 }
 
-// The deadline is not per-phase: a completed handshake within the
-// budget succeeds even though the dial alone could have eaten it all.
+// The deadline is not per-phase: a handshake inside the budget succeeds.
 func TestDialTLSReady(t *testing.T) {
 	remote := readyTLS(t)
 	tun := &Tunnel{Timeout: 2 * time.Second, InsecureSkipVerify: true}

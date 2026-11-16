@@ -1,10 +1,7 @@
 #!/bin/sh
-# e2e: ssh-tls-proxy behavior through the real ssh client.
-# Cases 1-3 use stdio only (no loopback servers, no network), so they
-# run in any environment; the success path is covered by the unit
-# tests (TestRunPickTLS et al.), which skip where loopback TLS is
-# broken. Cases 4 are live probes of public services (owner-approved
-# to be named here, 2026-11-14) and require real network.
+# e2e for ssh-tls-proxy through the real ssh client.
+# Cases 1-3 are offline; case 4 probes public services (owner-approved to
+# be named here) and needs network.
 set -u
 
 cd "$(dirname "$0")/.."
@@ -16,9 +13,8 @@ note() { printf 'FAIL: %s\n' "$*"; fail=1; }
 SSH_OPTS="-T -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 # 192.0.2.1 is TEST-NET-1: guaranteed dead.
 
-# 1a. standalone against a dead host: informative stderr, exit 255
-# (ssh discards the proxy's stderr when a control master is in play, so
-# via ssh the message is only visible with -o ControlPath=none)
+# 1a. standalone against a dead host: report on stderr, exit 255
+# (ssh discards a ProxyCommand's stderr unless ControlPath is none)
 out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/ssh-tls-proxy --timeout 1 192.0.2.1 2>&1)
 code=$?
 [ "$code" = 255 ] || note "standalone: exit=$code, want 255"

@@ -23,13 +23,11 @@ type Tunnel struct {
 	NextProtos         []string
 	ServerName         string
 	Silent             bool
-	// Timeout bounds how long one remote connection may take to be
-	// ready to communicate: the TCP connect and the TLS handshake
-	// together, under one deadline. Zero means no limit.
+	// Timeout bounds one remote connection: TCP connect plus TLS
+	// handshake under a single deadline. Zero means no limit.
 	Timeout time.Duration
 }
 
-// tlsConfig is the caller's TLS options, shared by every dial.
 func (t *Tunnel) tlsConfig() *tls.Config {
 	return &tls.Config{
 		ServerName:         t.ServerName,
@@ -38,10 +36,7 @@ func (t *Tunnel) tlsConfig() *tls.Config {
 	}
 }
 
-// dialer is the dialer for every remote connect: Timeout bounds the TCP
-// connect (a zero Timeout means no limit, which is why the CLI supplies
-// a default), and keep-alive is explicit rather than left to the
-// platform. DNS resolution rides on the same context deadline.
+// dialer bounds the connect by Timeout and sets keep-alive explicitly.
 func (t *Tunnel) dialer() *net.Dialer {
 	return &net.Dialer{
 		Timeout:   t.Timeout,
@@ -49,9 +44,8 @@ func (t *Tunnel) dialer() *net.Dialer {
 	}
 }
 
-// dialTLS connects (TCP) and completes the TLS handshake, the two
-// phases sharing one deadline of t.Timeout; a zero Timeout imposes
-// no limit. The returned connection is ready to communicate.
+// dialTLS connects and handshakes under one Deadline; a zero Timeout is
+// unlimited. The returned connection is ready to communicate.
 func (t *Tunnel) dialTLS(remote string) (*tls.Conn, error) {
 	d := t.dialer()
 	if t.Timeout <= 0 {
@@ -83,7 +77,7 @@ func (t *Tunnel) DialAndListen() error {
 		_ = conn.Close()
 	}
 
-	// use stdin/stdout
+	// stdio mode
 	if t.LocalAddress == "-" || t.LocalAddress == "|" {
 		var name string
 		network := "stdio"
@@ -97,7 +91,6 @@ func (t *Tunnel) DialAndListen() error {
 		return nil
 	}
 
-	// use net.Conn
 	local := net.JoinHostPort(t.LocalAddress, strconv.Itoa(t.LocalPort))
 	ln, err := net.Listen("tcp", local)
 	if err != nil {
@@ -119,7 +112,6 @@ func (t *Tunnel) DialAndListen() error {
 	}
 }
 
-// I wonder if I can get this to exactly mirror UnixAddr without passing it in
 type stdaddr struct {
 	net.UnixAddr
 }
@@ -143,15 +135,13 @@ func (rw *stdnet) RemoteAddr() net.Addr {
 	return rw.addr
 }
 
-// not all of net.Conn, just RWC and RemoteAddr()
+// just RWC plus RemoteAddr, so stdio and net.Conn both work
 type netReadWriteCloser interface {
 	io.ReadWriteCloser
 	RemoteAddr() net.Addr
 }
 
-// pipe copies src to dst and reports transport errors. io.EOF is the
-// normal end of a session, not an error; the source is closed when the
-// stream ends.
+// pipe copies src to dst; io.EOF is a session ending, not an error.
 func pipe(dst io.Writer, src io.Reader, name string) {
 	if _, err := io.Copy(dst, src); err != nil && !errors.Is(err, io.EOF) {
 		fmt.Fprintf(os.Stderr, "[copy error] (%s) %s\n", name, err)

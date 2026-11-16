@@ -1,10 +1,7 @@
 #!/bin/sh
-# e2e: sclient --ssh through the real ssh client.
-# Cases 1-3 are offline (TEST-NET-1 is guaranteed dead; no keys are
-# presented because the proxy dies before auth) and run in any
-# environment. Case 4 is a live probe of a public service (owner
-# approved to be named here, 2026-11-14) and needs real network plus a
-# usable ssh identity: run with LIVE=1.
+# e2e for sclient --ssh through the real ssh client.
+# Cases 1-3 are offline (TEST-NET-1 is guaranteed dead). Case 4 is a live
+# probe of public services (owner-approved to be named here): run with LIVE=1.
 set -u
 
 cd "$(dirname "$0")/.."

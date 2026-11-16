@@ -42,9 +42,8 @@ func TestIsDevNullStat(t *testing.T) {
 	}
 }
 
-// In a test run stderr is a pipe, not /dev/null, so StderrOrTTY must
-// return the plain-stderr writer: writes still go to stderr, Close is
-// a no-op, and stderr works afterwards.
+// Test stderr is a pipe, not /dev/null: StderrOrTTY returns the plain
+// stderr writer and its Close must not close fd 2.
 func TestStderrOrTTYPlainStderr(t *testing.T) {
 	w := StderrOrTTY()
 	if _, err := w.Write([]byte("test: plain stderr path\n")); err != nil {

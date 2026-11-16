@@ -9,7 +9,6 @@ import (
 	"syscall"
 )
 
-// isDevNullStat reports whether st describes the /dev/null device.
 func isDevNullStat(st *syscall.Stat_t) bool {
 	var nullst syscall.Stat_t
 	if err := syscall.Stat("/dev/null", &nullst); err != nil {
@@ -18,9 +17,8 @@ func isDevNullStat(st *syscall.Stat_t) bool {
 	return st.Mode&syscall.S_IFMT == syscall.S_IFCHR && st.Rdev == nullst.Rdev
 }
 
-// stderrIsDevNull reports whether fd 2 points at /dev/null, which
-// OpenSSH does for a ProxyCommand when both ControlPath and a valued
-// ControlPersist are set.
+// stderrIsDevNull reports fd 2 pointing at /dev/null, which OpenSSH does
+// for a ProxyCommand when ControlPath and a valued ControlPersist are set.
 func stderrIsDevNull() bool {
 	var st syscall.Stat_t
 	if err := syscall.Fstat(2, &st); err != nil {
@@ -29,12 +27,9 @@ func stderrIsDevNull() bool {
 	return isDevNullStat(&st)
 }
 
-// openTTY opens the controlling terminal for diagnostics. The proxy
-// is forked before a ControlPersist master daemon()s, so the terminal
-// is still reachable from here when the client runs in one. It fails
-// when there is no controlling terminal (cron, CI, non-interactive
-// scripts); then there is nowhere better to put the message.
-// O_NOCTTY: never adopt a tty.
+// openTTY opens the controlling terminal: the proxy is forked before a
+// ControlPersist master daemon()s, so the tty is still reachable. No tty
+// (cron, CI) means no fallback. O_NOCTTY: never adopt a tty.
 func openTTY() (io.WriteCloser, bool) {
 	f, err := os.OpenFile("/dev/tty", os.O_WRONLY|syscall.O_NOCTTY, 0)
 	if err != nil {
@@ -43,13 +38,9 @@ func openTTY() (io.WriteCloser, bool) {
 	return f, true
 }
 
-// StderrOrTTY returns a writer for diagnostic output: os.Stderr, or,
-// when stderr is /dev/null and a controlling terminal is still
-// reachable, a writer that tees os.Stderr and the terminal, so the
-// report reaches the user. Without a terminal (cron, CI) the open
-// fails and plain stderr is returned. The package only provides the
-// choice; the caller decides whether to use it and closes the
-// returned writer when done.
+// StderrOrTTY returns a diagnostic writer: os.Stderr, or - when stderr is
+// /dev/null and a controlling terminal is reachable - a tee to both. The
+// caller decides whether to use it and closes it when done.
 func StderrOrTTY() io.WriteCloser {
 	if !stderrIsDevNull() {
 		return stderrOnly{}
@@ -60,7 +51,6 @@ func StderrOrTTY() io.WriteCloser {
 	return stderrOnly{}
 }
 
-// ttyTee writes each write to both sides and closes the tty side.
 type ttyTee struct {
 	a, b io.Writer
 }

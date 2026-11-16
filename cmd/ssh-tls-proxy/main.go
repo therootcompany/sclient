@@ -27,16 +27,13 @@ var (
 	licenseType  = "MPL-2.0"
 )
 
-// printVersion reports the ldflags stamp when one was supplied, and falls
-// back to what Go embeds for a plain `go build` / `go run`: the module tag
-// (bi.Tag) plus the VCS revision and commit time. Every version string is
-// normalized without its "v" prefix so the printf below is the only place
-// that adds it - `git describe` and `bi.Tag` both include it already.
+// printVersion uses the ldflags stamp, or Go's own build info for a plain
+// build. Version strings are stripped of "v" so the printf is the only
+// place it is added.
 func printVersion(w io.Writer) {
 	if version == "0.0.0-dev" || commit == "0000000" {
 		if bi, ok := debug.ReadBuildInfo(); ok {
-			// bi.Main.Version is "devel" for a plain go build; it carries the
-			// tag when built as `go install mod@vX.Y.Z`.
+			// "devel" for a plain build; the tag for `go install mod@vX.Y.Z`
 			tag := strings.TrimPrefix(bi.Main.Version, "v")
 			if tag != "" && tag != "devel" {
 				version = tag
@@ -87,13 +84,10 @@ func main() {
 	}
 	cfg.Name = name
 	cfg.TLS = tlsCfg
-	// Diagnostic writer: main picks the destination. When ssh has
-	// nulled this command's stderr (ControlPath + valued
-	// ControlPersist), StderrOrTTY also reaches the terminal.
+	// StderrOrTTY works around ssh nulling a ProxyCommand's stderr
 	diag := sshtlsproxy.StderrOrTTY()
 	defer diag.Close()
-	// 0 session done, 255 no usable server (ssh convention), 1 client-side
-	// failure.
+	// 0 session done, 255 no usable server (ssh convention), 1 client-side failure
 	var code int
 	switch err := sshtlsproxy.Probe(context.Background(), cfg, os.Stdin, os.Stdout, diag); {
 	case errors.Is(err, sshtlsproxy.ErrNoServer):
@@ -104,9 +98,8 @@ func main() {
 	os.Exit(code)
 }
 
-// rawFlags holds the values that need post-processing before they can
-// become a config: the ALPN list, the duration, the server name, and
-// the insecure aliases.
+// rawFlags holds values that need post-processing before they can become
+// a config: the ALPN list, the duration, the server name, the insecure alias.
 type rawFlags struct {
 	alpnRaw    string
 	serverName string
@@ -114,7 +107,6 @@ type rawFlags struct {
 	insecure   bool
 }
 
-// newFlagSet registers all flags on fs.
 func newFlagSet(cfg *sshtlsproxy.Config, raw *rawFlags) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 
@@ -157,8 +149,7 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 		return sshtlsproxy.Config{}, nil, false
 	}
 
-	// Visit reports only the flags the operator actually gave, so it has to
-	// run after Parse, not before.
+	// Visit sees only flags the operator gave, so it runs after Parse
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if fs.NArg() != 1 {
@@ -168,8 +159,7 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 		return sshtlsproxy.Config{}, nil, false
 	}
 
-	// Env vars fill in only flags the operator did not set. Malformed
-	// values are ignored: the flag default stands.
+	// Env vars fill in only unset flags; malformed values keep the default
 	if !set["ssh-port"] {
 		if v := os.Getenv("SSHTLSPROXY_SSH_PORT"); v != "" {
 			if p, err := strconv.Atoi(v); err == nil {
@@ -201,17 +191,14 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 	}
 
 	cfg.ALPN = parseOptionList(raw.alpnRaw)
-	// An explicit --alpn '' is "no ALPN requirement" (sclient
-	// semantics): non-nil empty, so the engine keeps it and takes no
-	// note. An omitted flag is nil and takes the engine default.
+	// explicit --alpn "" = no ALPN requirement (non-nil empty, no note);
+	// an omitted flag stays nil and takes the engine default
 	if set["alpn"] && cfg.ALPN == nil {
 		cfg.ALPN = []string{}
 	}
 	cfg.Timeout = time.Duration(raw.timeoutSec * float64(time.Second))
 
-	// %h never legitimately carries a port (ssh takes ports from -p /
-	// Port), but if it does, treat it as the TLS port. A colon with no
-	// numeric port is garbage, not a host:port - usage error.
+	// %h never carries a port, but if it does, treat it as the TLS port
 	host := fs.Arg(0)
 	if h, p, err := net.SplitHostPort(host); err == nil && !strings.Contains(h, ":") {
 		port, aerr := strconv.Atoi(p)
@@ -232,8 +219,7 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 		return sshtlsproxy.Config{}, nil, false
 	}
 
-	// The TLS side is this tool's option set, made explicit: the engine
-	// uses the config as-is.
+	// the engine uses a supplied tls.Config as-is, so state every option
 	serverName := raw.serverName
 	if serverName == "" {
 		serverName = host

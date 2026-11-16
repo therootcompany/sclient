@@ -38,8 +38,8 @@ func TestReadBannerTooLong(t *testing.T) {
 	}
 }
 
-// A peer that never sends a newline must hit the RFC limit, not make the
-// reader buffer forever: the read is bounded, not just the result checked.
+// A peer that never sends a newline hits the RFC limit rather than
+// buffering forever: the read is bounded, not just the result checked.
 func TestReadBannerBounded(t *testing.T) {
 	r := bufio.NewReader(strings.NewReader("SSH-" + strings.Repeat("x", 4096)))
 	if _, err := readBanner(r); err == nil {
@@ -54,9 +54,8 @@ func TestReadBannerNotSSH(t *testing.T) {
 	}
 }
 
-// TestReadBannerReadAhead verifies that bytes arriving in the same segment
-// as the banner (e.g. a KEXINIT glued to it, as OpenSSH does) survive in
-// the reader for the caller to relay.
+// Bytes arriving in the same segment as the banner (a glued KEXINIT) must
+// survive in the reader for the caller to relay.
 func TestReadBannerReadAhead(t *testing.T) {
 	const kex = "KEXINIT-PAYLOAD"
 	r := bufio.NewReader(strings.NewReader("SSH-2.0-x\r\n" + kex))
