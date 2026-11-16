@@ -67,3 +67,18 @@ func TestParseArgsAlpnList(t *testing.T) {
 		t.Errorf("next protos = %v, want %v", tlsCfg.NextProtos, want)
 	}
 }
+
+// Zero is the default clock, not "no limit"; a negative clock is a usage
+// error.
+func TestParseArgsTimeoutZeroIsTheDefault(t *testing.T) {
+	cfg, _, ok := parseArgs([]string{"--timeout", "0", "example.com"})
+	if !ok {
+		t.Fatal("parseArgs rejected --timeout 0")
+	}
+	if cfg.Timeout != 0 {
+		t.Errorf("timeout = %v, want 0 (the engine fills in 3s)", cfg.Timeout)
+	}
+	if _, _, ok := parseArgs([]string{"--timeout", "-1", "example.com"}); ok {
+		t.Error("a negative timeout must be rejected")
+	}
+}
