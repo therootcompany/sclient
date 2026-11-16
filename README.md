@@ -39,6 +39,7 @@ A poor man's (or Windows user's) makeshift replacement for `openssl s_client`,
 - [Install](#install)
 - [Usage](#usage)
 - [Examples](#examples)
+- [SSH clients (plain mode)](#ssh-clients-plain-mode)
 - [ssh-tls-proxy](#ssh-tls-proxy)
 - [sclient --ssh](#sclient---ssh)
 - [Build from Source](#build-from-source)
@@ -76,7 +77,10 @@ sclient [flags] <remote> <local>
   - `-k`, `--insecure` ignore invalid TLS (SSL/HTTPS) certificates
   - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
     not use this option)
-  - `--alpn <protocol-list>`
+  - `--alpn <protocol-list>` acceptable protocols, ex: `h2,http/1.1` `ssh`.
+    Unset, plain mode offers no ALPN - except `ssh`, which it sniffs from the
+    local side (see [SSH clients](#ssh-clients-plain-mode)). An explicit
+    `--alpn` always wins, `--alpn ''` included.
 - remote
   - must have servername (i.e. example.com)
   - port is optional (default is 443)
@@ -85,15 +89,18 @@ sclient [flags] <remote> <local>
   - must have port (i.e. 3000)
 
   -alpn string
-    	acceptable protocols, ex: 'h2,http/1.1' 'http/1.1' (default) 'ssh' (default "http/1.1")
+    	acceptable protocols, ex: 'h2,http/1.1' 'ssh' (unset: 'ssh' is offered
+    	if the local side is an SSH client)
   -insecure
     	ignore bad TLS/SSL/HTTPS certificates
   -k	alias for --insecure
   -s	alias of --silent
   -servername string
-    	specify a servername different from <remote> (to disable SNI use an IP as <remote> and do use this option)
+    	specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)
   -silent
     	less verbose output
+  -timeout float
+    	seconds until the remote is ready to communicate (default 3; 0 = no limit)
 
 # Examples
 
@@ -140,6 +147,29 @@ sclient --servername "Robert'); DROP TABLE Students;" -k example.com localhost:3
 ```bash
 sclient --servername "../../../.hidden/private.txt" -k example.com localhost:3000
 ```
+
+# SSH clients (plain mode)
+
+A TLS front that routes SSH needs the `ssh` ALPN. Plain mode does not offer
+one by default, so it looks at the first bytes the local side sends: an RFC
+4253 section 4.2 identification string (`SSH-2.0-OpenSSH_9.6\r\n`, magic
+`53 53 48 2d` = `SSH-`) means the client is SSH, and `ssh` is offered.
+Nothing is consumed - the banner is relayed to the remote as-is.
+
+```bash
+ssh -o ProxyCommand='sclient %n %p -' example.com
+```
+
+Detection never overrides a flag:
+
+```sh
+sclient --alpn h2,http/1.1 example.com 3000 # verbatim, no sniffing
+sclient --alpn '' example.com 3000          # offer nothing, no sniffing
+```
+
+The peek waits at most 1s for the first bytes, so a client that says nothing
+is not mistaken for SSH. `sclient --ssh` is still the right tool when you
+want the dual-port probe; this is only about the ALPN.
 
 # ssh-tls-proxy
 

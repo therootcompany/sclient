@@ -46,6 +46,27 @@ func TestSSHALPN(t *testing.T) {
 	}
 }
 
+func TestPlainALPN(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		explicit bool
+		want     []string
+	}{
+		{"unset leaves room for the sniff", "", false, nil},
+		{"explicit empty offers nothing", "", true, []string{}},
+		{"explicit list is verbatim", "h2,ssh", true, []string{"h2", "ssh"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := plainALPN(tc.raw, tc.explicit)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("plainALPN(%q, %v) = %v, want %v", tc.raw, tc.explicit, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPlainTimeout(t *testing.T) {
 	cases := []struct {
 		name     string

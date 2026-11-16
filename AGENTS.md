@@ -23,6 +23,20 @@ once is the whole point** — the tool determines which to accept:
 Do not "simplify" this into trying one port and falling back; the
 simultaneous probe with the banner exchange is the feature.
 
+## Plain mode: the ALPN sniff (do not remove)
+
+A TLS front routes SSH on ALPN `ssh`, and plain mode offers no ALPN
+unless the operator names one. When `--alpn` is *unset*, the tunnel
+peeks the local side's first bytes: an RFC 4253 §4.2 identification
+string (`SSH-`) means the client is SSH, so `ssh` is offered.
+
+Rules to preserve:
+- Detection fills in only an unset `--alpn`. An explicit list is used
+  verbatim, an explicit empty one offers nothing.
+- The peek must not consume the banner - the relay still sees it.
+- The peek is bounded (1s) so a client that says nothing is not
+  mistaken for SSH and the tunnel never hangs.
+
 ## Test hosts
 
 The parameterized live-test hosts live **only** in:

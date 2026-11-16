@@ -1,6 +1,8 @@
 package sclient
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,8 +11,10 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"io"
 	"math/big"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -114,7 +118,7 @@ func TestDialTLSStalledHandshake(t *testing.T) {
 	remote := stallTLS(t)
 	tun := &Tunnel{Timeout: 300 * time.Millisecond, InsecureSkipVerify: true}
 	start := time.Now()
-	_, err := tun.dialTLS(remote)
+	_, err := tun.dialTLS(remote, tun.NextProtos)
 	if err == nil {
 		t.Fatal("expected an error from a stalled handshake")
 	}
@@ -132,7 +136,7 @@ func TestDialTLSStalledHandshake(t *testing.T) {
 func TestDialTLSServerName(t *testing.T) {
 	remote, seen := sniTLS(t)
 	tun := &Tunnel{Timeout: 2 * time.Second, ServerName: "alt.example", InsecureSkipVerify: true}
-	conn, err := tun.dialTLS(remote)
+	conn, err := tun.dialTLS(remote, tun.NextProtos)
 	if err != nil {
 		t.Fatalf("dialTLS: %v", err)
 	}
@@ -145,10 +149,10 @@ func TestDialTLSServerName(t *testing.T) {
 // An unset --servername takes the remote host. tls.Dial did this implicitly;
 // the bounded dial has to do it explicitly or the handshake has no name.
 func TestTunnelTLSConfigServerName(t *testing.T) {
-	if got := (&Tunnel{ServerName: "alt.example"}).tlsConfig("127.0.0.1").ServerName; got != "alt.example" {
+	if got := (&Tunnel{ServerName: "alt.example"}).tlsConfig("127.0.0.1", nil).ServerName; got != "alt.example" {
 		t.Fatalf("ServerName = %q, want the operator's name", got)
 	}
-	if got := (&Tunnel{}).tlsConfig("example.com").ServerName; got != "example.com" {
+	if got := (&Tunnel{}).tlsConfig("example.com", nil).ServerName; got != "example.com" {
 		t.Fatalf("ServerName = %q, want the remote host", got)
 	}
 }
@@ -158,7 +162,7 @@ func TestTunnelTLSConfigServerName(t *testing.T) {
 func TestDialTLSDefaultsServerName(t *testing.T) {
 	remote := readyTLS(t)
 	tun := &Tunnel{Timeout: 2 * time.Second} // no ServerName, no InsecureSkipVerify
-	_, err := tun.dialTLS(remote)
+	_, err := tun.dialTLS(remote, tun.NextProtos)
 	if err == nil {
 		t.Fatal("a self-signed certificate must fail verification")
 	}
@@ -175,7 +179,7 @@ func TestDialTLSNoTimeout(t *testing.T) {
 	remote := stallTLS(t)
 	tun := &Tunnel{Timeout: 0, InsecureSkipVerify: true}
 	done := make(chan error, 1)
-	go func() { _, err := tun.dialTLS(remote); done <- err }()
+	go func() { _, err := tun.dialTLS(remote, tun.NextProtos); done <- err }()
 	select {
 	case err := <-done:
 		t.Fatalf("returned %v, want it to wait without a deadline", err)
@@ -188,12 +192,139 @@ func TestDialTLSNoTimeout(t *testing.T) {
 func TestDialTLSReady(t *testing.T) {
 	remote := readyTLS(t)
 	tun := &Tunnel{Timeout: 2 * time.Second, InsecureSkipVerify: true}
-	conn, err := tun.dialTLS(remote)
+	conn, err := tun.dialTLS(remote, tun.NextProtos)
 	if err != nil {
 		t.Fatalf("dialTLS: %v", err)
 	}
 	defer conn.Close()
 	if !conn.ConnectionState().HandshakeComplete {
 		t.Fatal("handshake not complete")
+	}
+}
+
+// localPipe is one end of a net.Pipe as the tunnel sees it: the peer writes
+// the payload and closes, so a silent client is a clean EOF, not a hang.
+func localPipe(t *testing.T, payload string) netReadWriteCloser {
+	t.Helper()
+	client, peer := net.Pipe()
+	go func() {
+		_, _ = peer.Write([]byte(payload))
+		_ = peer.Close()
+	}()
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+// Plain mode offers no ALPN by default; an SSH client on the local side says
+// "ssh" for itself. A flag always wins - explicit, empty included.
+func TestAlpnFor(t *testing.T) {
+	cases := []struct {
+		name   string
+		next   []string
+		client string
+		want   []string
+	}{
+		{"SSH client offers ssh", nil, "SSH-2.0-OpenSSH_9.6\r\n", []string{"ssh"}},
+		{"a legacy banner is still SSH", nil, "SSH-1.99-mod_ssh\r\n", []string{"ssh"}},
+		{"HTTP is not SSH", nil, "GET / HTTP/1.1\r\n", nil},
+		{"nothing is not SSH", nil, "", nil},
+		{"the flag wins over the sniff", []string{"http/1.1"}, "SSH-2.0-OpenSSH_9.6\r\n", []string{"http/1.1"}},
+		{"explicit empty offers nothing", []string{}, "SSH-2.0-OpenSSH_9.6\r\n", nil},
+		{"a given list survives a non-SSH client", []string{"ssh"}, "GET / HTTP/1.1\r\n", []string{"ssh"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tun := &Tunnel{NextProtos: tc.next}
+			conn := localPipe(t, tc.client)
+			client := bufio.NewReader(conn)
+			got := tun.alpnFor(client, conn)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("alpnFor = %v, want %v", got, tc.want)
+			}
+			rest, err := io.ReadAll(client)
+			if err != nil {
+				t.Fatalf("relay read: %v", err)
+			}
+			if string(rest) != tc.client {
+				t.Fatalf("the sniff ate the banner: %q", rest)
+			}
+		})
+	}
+}
+
+// echoTLS records the ALPN the client advertised, echoes the first line, and
+// closes.
+func echoTLS(t *testing.T, offered *atomic.Value) string {
+	t.Helper()
+	cert := selfSigned(t)
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		// GetConfigForClient runs for every ClientHello, SNI or not, which is
+		// what makes the advertised ALPN list observable here.
+		GetConfigForClient: func(ch *tls.ClientHelloInfo) (*tls.Config, error) {
+			offered.Store(ch.SupportedProtos)
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			tc := c.(*tls.Conn)
+			if err := tc.Handshake(); err != nil {
+				_ = tc.Close()
+				continue
+			}
+			line, _, err := bufio.NewReader(tc).ReadLine()
+			if err == nil {
+				_, _ = tc.Write(append(line, '\r', '\n'))
+			}
+			_ = tc.Close()
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	return ln.Addr().String()
+}
+
+// End to end: an SSH banner on the local side reaches the wire as the "ssh"
+// ALPN, and the banner itself is still relayed.
+func TestHandleConnectionSniffsSSH(t *testing.T) {
+	cases := []struct {
+		client string
+		want   []string
+	}{
+		{"SSH-2.0-OpenSSH_9.6\r\n", []string{"ssh"}},
+		{"GET / HTTP/1.1\r\n", nil},
+	}
+	for _, tc := range cases {
+		offered := new(atomic.Value)
+		remote := echoTLS(t, offered)
+		client, peer := net.Pipe()
+		t.Cleanup(func() { _ = client.Close(); _ = peer.Close() })
+		go func() { _, _ = peer.Write([]byte(tc.client)) }()
+
+		tun := &Tunnel{Timeout: 2 * time.Second, InsecureSkipVerify: true}
+		done := make(chan struct{})
+		go func() { tun.handleConnection(remote, client); close(done) }()
+
+		buf := make([]byte, 64)
+		n, err := peer.Read(buf)
+		if err != nil {
+			t.Fatalf("read echo: %v", err)
+		}
+		if !bytes.HasPrefix(buf[:n], []byte("SSH-")) && !bytes.HasPrefix(buf[:n], []byte("GET ")) {
+			t.Fatalf("echo = %q, want the client's banner relayed", buf[:n])
+		}
+		got, _ := offered.Load().([]string)
+		if !slices.Equal(got, tc.want) {
+			t.Fatalf("advertised ALPN = %v, want %v", got, tc.want)
+		}
+		_ = peer.Close() // the local side is done, so the session ends
+		<-done
 	}
 }

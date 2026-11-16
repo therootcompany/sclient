@@ -75,7 +75,7 @@ func main() {
 
 	flag.Usage = usage
 
-	flag.StringVar(&alpnList, "alpn", "", "acceptable protocols, ex: 'h2,http/1.1' 'http/1.1' 'ssh'")
+	flag.StringVar(&alpnList, "alpn", "", "acceptable protocols, ex: 'h2,http/1.1' 'ssh'. Unset: no ALPN is offered, except 'ssh' when the local side is an SSH client")
 	flag.BoolVar(&insecure, "k", false, "alias for --insecure")
 	flag.BoolVar(&silent, "s", false, "alias of --silent")
 	flag.StringVar(&servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
@@ -91,7 +91,7 @@ func main() {
 	set := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
-	alpns := splitList(alpnList)
+	alpns := plainALPN(alpnList, set["alpn"])
 	remotestr := flag.Arg(0)
 	localstr := flag.Arg(1)
 
@@ -302,6 +302,17 @@ func newSSHConfig(host string, tlsPort int, servername string, alpns []string, i
 			MinVersion:         tls.VersionTLS12,
 		},
 	}
+}
+
+// plainALPN is --alpn for plain mode. Unset is nil, which lets the tunnel
+// sniff the local side for an SSH banner; an explicit list - empty included -
+// is used verbatim, so detection never overrides a flag.
+func plainALPN(raw string, explicit bool) []string {
+	a := splitList(raw)
+	if explicit && a == nil {
+		return []string{}
+	}
+	return a
 }
 
 // sshALPN resolves --alpn for --ssh mode: unset takes [ssh], an explicit
