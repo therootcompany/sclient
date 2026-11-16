@@ -7,34 +7,24 @@ import (
 	"syscall"
 )
 
-// OpenSSH nulls a ProxyCommand's stderr when ControlPath is set with a
-// valued ControlPersist (since 8.0). When that happens and the controlling
-// terminal is still reachable - the proxy is forked before the ControlMaster
-// daemon()s - point os.Stderr at it so the report and --verbose notes are
-// visible instead of dropped.
+// Stderr returns the diagnostic destination: os.Stderr, or - when OpenSSH
+// has nullled fd 2 for a ProxyCommand (ControlPath + valued ControlPersist,
+// since 8.0) - the controlling terminal, which is still reachable because
+// the proxy is forked before the ControlMaster daemon()s.
 //
-// os.Stderr is replaced, not duplicated: fd 2 still points at /dev/null, so
-// anything that captured os.Stderr before this init (the log package) or
-// inherits fd 2 (a child process) is unaffected. This package does neither.
-// The tty fd is never closed, exactly like os.Stderr itself.
-func init() {
+// It returns *os.File so the caller can assign it straight to os.Stderr.
+// fd 2 itself is untouched, so anything that captured os.Stderr before this
+// call, or inherits fd 2, still sees /dev/null. The tty fd is never closed,
+// exactly like os.Stderr itself.
+func Stderr() *os.File {
 	if !stderrIsDevNull() {
-		return
+		return os.Stderr
 	}
 	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY|syscall.O_NOCTTY, 0)
 	if err != nil {
-		return
+		return os.Stderr
 	}
-	os.Stderr = tty
-}
-
-// isDevNullStat reports whether st describes the null device.
-func isDevNullStat(st *syscall.Stat_t) bool {
-	var nullst syscall.Stat_t
-	if err := syscall.Stat("/dev/null", &nullst); err != nil {
-		return false
-	}
-	return st.Mode&syscall.S_IFMT == syscall.S_IFCHR && st.Rdev == nullst.Rdev
+	return tty
 }
 
 // stderrIsDevNull reports fd 2 pointing at /dev/null.
@@ -44,4 +34,13 @@ func stderrIsDevNull() bool {
 		return false
 	}
 	return isDevNullStat(&st)
+}
+
+// isDevNullStat reports whether st describes the null device.
+func isDevNullStat(st *syscall.Stat_t) bool {
+	var nullst syscall.Stat_t
+	if err := syscall.Stat("/dev/null", &nullst); err != nil {
+		return false
+	}
+	return st.Mode&syscall.S_IFMT == syscall.S_IFCHR && st.Rdev == nullst.Rdev
 }

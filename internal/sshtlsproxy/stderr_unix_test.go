@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// The init in stderr_unix.go depends on recognizing /dev/null as fd 2, so
-// the stat test is the load-bearing one.
+// Stderr() only diverts when it recognizes fd 2 as the null device, so the
+// stat test is the load-bearing one.
 func TestIsDevNullStat(t *testing.T) {
 	f, err := os.Open("/dev/null")
 	if err != nil {
@@ -40,5 +40,15 @@ func TestIsDevNullStat(t *testing.T) {
 	}
 	if isDevNullStat(&st) {
 		t.Error("regular file recognized as the null device")
+	}
+}
+
+// In the normal case - fd 2 is a pipe, not /dev/null - Stderr is os.Stderr.
+func TestStderrIsStderr(t *testing.T) {
+	if stderrIsDevNull() {
+		t.Skip("fd 2 is /dev/null in this test runner")
+	}
+	if got := Stderr(); got != os.Stderr {
+		t.Errorf("Stderr() = %v, want os.Stderr", got)
 	}
 }

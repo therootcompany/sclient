@@ -51,6 +51,10 @@ func usage() {
 }
 
 func main() {
+	// ssh nulls a ProxyCommand's stderr; Stderr() redirects it to the tty.
+	// log captured os.Stderr at its own init, so log.SetOutput(os.Stderr)
+	// would have to be called separately to route it too.
+	os.Stderr = sshtlsproxy.Stderr()
 	if len(os.Args) >= 2 {
 		if os.Args[1] == "-V" || strings.TrimLeft(os.Args[1], "-") == "version" {
 			fmt.Printf("%s\n", ver())
