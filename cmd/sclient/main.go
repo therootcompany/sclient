@@ -41,7 +41,7 @@ func usage() {
 		"\n"+
 		"   ex: sclient example.com:443 -\n"+
 		"\n"+
-		"   ex: sclient --ssh example.com:443 -\n"+
+		"   ex: ssh -o ProxyCommand='sclient --ssh --ssh-port %%p %%n' example.com\n"+
 		"      (dual-port SSH probe; the local side must be an SSH client)\n"+
 		"\n"+
 		"exit codes (--ssh): 0 done, 1 failure, 2 usage, 255 no usable server\n"+

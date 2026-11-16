@@ -203,8 +203,8 @@ connection preferred, and the winner spliced in.
 # stunnel-style: a local listener for SSH clients
 sclient --ssh example.com:443 localhost:3000
 
-# straight through stdin/stdout (usable as an ssh ProxyCommand)
-ssh -o 'ProxyCommand=sclient --ssh example.com' example.com
+# as an ssh ProxyCommand: plain 22 and TLS 443 probed at once
+ssh -o ProxyCommand='sclient --ssh --ssh-port %p %n' example.com
 ```
 
 The local side must be an SSH client: the first line of each connection
