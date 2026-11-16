@@ -84,12 +84,9 @@ func main() {
 	}
 	cfg.Name = name
 	cfg.TLS = tlsCfg
-	// StderrOrTTY works around ssh nulling a ProxyCommand's stderr
-	diag := sshtlsproxy.StderrOrTTY()
-	defer diag.Close()
 	// 0 session done, 255 no usable server (ssh convention), 1 client-side failure
 	var code int
-	switch err := sshtlsproxy.Probe(context.Background(), cfg, os.Stdin, os.Stdout, diag); {
+	switch err := sshtlsproxy.Probe(context.Background(), cfg, os.Stdin, os.Stdout, os.Stderr); {
 	case errors.Is(err, sshtlsproxy.ErrNoServer):
 		code = 255
 	case err != nil:

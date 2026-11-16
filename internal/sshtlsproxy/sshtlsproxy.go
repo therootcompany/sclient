@@ -426,7 +426,7 @@ func splice(c *candidate, clientIn *bufio.Reader, out io.Writer) {
 
 // failNoServer writes the report to errOut and nowhere else; the caller
 // picks the destination. ssh can null a ProxyCommand's stderr (ControlPath
-// + valued ControlPersist, since 8.0); StderrOrTTY works around that.
+// + valued ControlPersist, since 8.0); stderr_unix.go's init works around that.
 func failNoServer(cfg Config, ready, failed []*candidate, errOut io.Writer) {
 	if cfg.Silent {
 		return
