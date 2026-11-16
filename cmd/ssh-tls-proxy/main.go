@@ -9,9 +9,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"git.rootprojects.org/root/sclient.go/internal/sshtlsproxy"
@@ -88,9 +90,13 @@ func main() {
 	}
 	cfg.Name = name
 	cfg.TLS = tlsCfg
+	// Ctrl-C or SIGTERM cancels the probe and the session
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	// 0 session done, 255 no usable server (ssh convention), 1 client-side failure
 	var code int
-	switch err := sshtlsproxy.Probe(context.Background(), cfg, os.Stdin, os.Stdout, os.Stderr); {
+	switch err := sshtlsproxy.Probe(ctx, cfg, os.Stdin, os.Stdout, os.Stderr); {
 	case errors.Is(err, sshtlsproxy.ErrNoServer):
 		code = 255
 	case err != nil:

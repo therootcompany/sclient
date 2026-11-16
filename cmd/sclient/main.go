@@ -9,8 +9,10 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	sclient "git.rootprojects.org/root/sclient.go"
@@ -85,6 +87,10 @@ func main() {
 
 	flag.Parse()
 
+	// Ctrl-C or SIGTERM cancels in-flight probes and sessions
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	// Visit sees only flags the operator gave, so it runs after Parse.
 	set := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
@@ -116,7 +122,7 @@ func main() {
 
 	if sshMode {
 		// --ssh replaces the Tunnel: the engine is the transport
-		runSSH(remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, sshPort, timeoutSec)
+		runSSH(ctx, remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, sshPort, timeoutSec)
 	}
 
 	remoteHost, remotePort, err := remoteAddr(remotestr, 443)
@@ -210,7 +216,7 @@ func plainTimeout(raw float64, explicit bool) float64 {
 // runSSH is the --ssh transport: the stdio pair, or every accepted local
 // connection, goes through the engine. The local side must be an SSH
 // client. It never returns.
-func runSSH(remotestr, localstr, servername string, alpns []string, insecure, silent bool, sshPort int, timeoutSec float64) {
+func runSSH(ctx context.Context, remotestr, localstr, servername string, alpns []string, insecure, silent bool, sshPort int, timeoutSec float64) {
 	host, tlsPort, err := remoteAddr(remotestr, 443)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sclient: %s\n", err)
@@ -220,7 +226,7 @@ func runSSH(remotestr, localstr, servername string, alpns []string, insecure, si
 	cfg := newSSHConfig(host, tlsPort, servername, alpns, insecure, silent, sshPort, timeoutSec)
 
 	if localstr == "-" || localstr == "|" {
-		exitSSH(cfg.Host, sshtlsproxy.Probe(context.Background(), cfg, os.Stdin, os.Stdout, os.Stderr))
+		exitSSH(cfg.Host, sshtlsproxy.Probe(ctx, cfg, os.Stdin, os.Stdout, os.Stderr))
 	}
 
 	lhost, lport, err := localAddr(localstr)
@@ -238,18 +244,18 @@ func runSSH(remotestr, localstr, servername string, alpns []string, insecure, si
 	if !silent {
 		_, _ = fmt.Fprintf(os.Stdout, "[listening] %s:%d => %s:%d (ssh)\n", lhost, lport, cfg.Host, cfg.TLSPort)
 	}
-	sshListen(cfg, ln, os.Stderr)
+	sshListen(ctx, cfg, ln, os.Stderr)
 }
 
 // sshListen gives each accepted connection its own probe.
-func sshListen(cfg sshtlsproxy.Config, ln net.Listener, errOut io.Writer) {
+func sshListen(ctx context.Context, cfg sshtlsproxy.Config, ln net.Listener, errOut io.Writer) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
 		go func() {
-			_ = sshtlsproxy.Probe(context.Background(), cfg, conn, conn, errOut)
+			_ = sshtlsproxy.Probe(ctx, cfg, conn, conn, errOut)
 		}()
 	}
 }

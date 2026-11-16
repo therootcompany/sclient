@@ -177,7 +177,7 @@ func TestSSHListenerNoServer(t *testing.T) {
 
 	var sw signalWriter
 	sw.sig = make(chan struct{})
-	go sshListen(cfg, ln, &sw)
+	go sshListen(t.Context(), cfg, ln, &sw)
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {

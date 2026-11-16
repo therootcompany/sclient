@@ -141,11 +141,14 @@ func dialCandidate(ctx context.Context, cfg Config, port int, kind string, diale
 	return c
 }
 
-// dialError renames Go's "operation was canceled": the only cancel here
-// is the probe clock, so a canceled dial is a timeout worth reporting.
+// dialError names the reason a dial never connected: the probe clock gives a
+// timeout, an explicit cancel from the caller gives a cancellation.
 func dialError(err error, elapsed time.Duration) error {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf("timed out after %s", elapsed.Round(10*time.Millisecond))
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("canceled after %s", elapsed.Round(10*time.Millisecond))
 	}
 	return err
 }
@@ -194,8 +197,12 @@ func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 
 // Probe returns nil when a session completed through the splice,
 // ErrNoServer when neither candidate is usable, or a client-side error.
-// The caller supplies the root context; Probe derives its own clock.
+// ctx bounds the probe and the session: Probe caps the probe with
+// cfg.Timeout, but never bounds the session with it.
 func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut io.Writer) error {
+	if errOut == nil {
+		errOut = io.Discard
+	}
 	cfg, dialer, tlsCfg := cfg.resolved()
 	debugf := func(format string, args ...any) {
 		if cfg.Verbose {
@@ -203,10 +210,12 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 		}
 	}
 
-	start := time.Now()
-	ctx, cancel := context.WithCancel(ctx)
-	timer := time.AfterFunc(cfg.Timeout, cancel)
+	// One clock for the probe: the caller's deadline, capped by cfg.Timeout
+	// and shortened by the grace window. The caller's own ctx is kept for the
+	// session, which the probe clock must not bound.
+	clock, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
+	timer := time.AfterFunc(cfg.Timeout, cancel)
 
 	// Intercepting exactly one client line is safe: the client waits for
 	// the server banner before sending anything else (RFC 4253 4.2).
@@ -221,10 +230,10 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	res := make(chan *candidate, 2)
 	up := make(chan time.Duration, 2)
 	go func() {
-		res <- dialCandidate(ctx, cfg, cfg.SSHPort, "ssh", dialer, nil, func(el time.Duration) { up <- el })
+		res <- dialCandidate(clock, cfg, cfg.SSHPort, "ssh", dialer, nil, func(el time.Duration) { up <- el })
 	}()
 	go func() {
-		res <- dialCandidate(ctx, cfg, cfg.TLSPort, "tls", dialer, tlsCfg, func(el time.Duration) { up <- el })
+		res <- dialCandidate(clock, cfg, cfg.TLSPort, "tls", dialer, tlsCfg, func(el time.Duration) { up <- el })
 	}()
 
 	ready := make([]*candidate, 0, 2)
@@ -240,7 +249,7 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 			if !graceArmed {
 				graceArmed = true
 				d := time.Now().Add(graceFor(el))
-				if dl := start.Add(cfg.Timeout); d.After(dl) {
+				if dl, ok := clock.Deadline(); ok && d.After(dl) {
 					d = dl
 				}
 				_ = timer.Reset(time.Until(d))
@@ -260,8 +269,8 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 		}
 	}
 
-	clientBanner, clientErr := takeClientResult(clientDone, ctx)
-	timer.Stop() // banner phase uses per-conn deadlines; the splice uses none
+	clientBanner, clientErr := takeClientResult(clientDone, clock)
+	timer.Stop() // the clock stays stopped: the session is not probe-bounded
 	if clientErr != nil {
 		for _, c := range ready {
 			_ = c.conn.Close()
@@ -281,11 +290,13 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	}
 
 	// banner exchange with the same grace rule as the dials
-	probeDeadline := start.Add(cfg.Timeout)
-	exchangeBanners(probeDeadline, ready, clientBanner, debugf)
+	exchangeBanners(clock, ready, clientBanner, debugf)
 
 	chosen := pickCandidate(ready)
 	if chosen == nil {
+		for _, c := range ready {
+			_ = c.conn.Close()
+		}
 		failNoServer(cfg, ready, failed, errOut)
 		closeOut(out)
 		return ErrNoServer
@@ -299,7 +310,8 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	if !cfg.Silent {
 		_, _ = fmt.Fprintf(errOut, "%s: %s: using %s (%s)\n", cfg.Name, cfg.Host, chosen.name, chosen.address)
 	}
-	splice(chosen, clientIn, out)
+	// the session is bounded by the caller's ctx, not the probe clock
+	splice(ctx, chosen, clientIn, out)
 	return nil
 }
 
@@ -352,9 +364,14 @@ func pickCandidate(ready []*candidate) *candidate {
 
 // exchangeBanners writes the client banner to every candidate and reads
 // each server banner. Every candidate sends exactly once, so the drain
-// below cannot block.
-func exchangeBanners(probeDeadline time.Time, ready []*candidate, clientBanner string, debugf func(string, ...any)) {
+// below cannot block: the clock (or the caller) cancels ctx, which closes
+// the outstanding conns and makes every read return.
+func exchangeBanners(ctx context.Context, ready []*candidate, clientBanner string, debugf func(string, ...any)) {
 	sent := time.Now()
+	probeDeadline, ok := ctx.Deadline()
+	if !ok {
+		probeDeadline = sent.Add(time.Minute) // defensive: Probe always passes a clock
+	}
 	bch := make(chan *candidate, len(ready))
 	for _, c := range ready {
 		_ = c.conn.SetReadDeadline(probeDeadline)
@@ -371,8 +388,6 @@ func exchangeBanners(probeDeadline time.Time, ready []*candidate, clientBanner s
 	}
 
 	remaining := append([]*candidate(nil), ready...)
-	stopAt := time.NewTimer(time.Until(probeDeadline))
-	defer stopAt.Stop()
 	firstOK := false
 	for len(remaining) > 0 {
 		select {
@@ -393,7 +408,10 @@ func exchangeBanners(probeDeadline time.Time, ready []*candidate, clientBanner s
 					_ = o.conn.SetReadDeadline(d)
 				}
 			}
-		case <-stopAt.C:
+		case <-ctx.Done():
+			for _, c := range remaining {
+				_ = c.conn.Close()
+			}
 			for len(remaining) > 0 {
 				remaining = removeCandidate(remaining, <-bch)
 			}
@@ -410,8 +428,10 @@ func removeCandidate(list []*candidate, c *candidate) []*candidate {
 
 // splice pumps both directions until the server closes. The banner and
 // any buffered read-ahead are the first bytes the client sees; after this
-// the proxy is a dumb pipe.
-func splice(c *candidate, clientIn *bufio.Reader, out io.Writer) {
+// the proxy is a dumb pipe. Cancelling ctx closes the server connection and
+// the client-facing writer: the client sees EOF, ssh exits, and its closed
+// stdin ends the write pump.
+func splice(ctx context.Context, c *candidate, clientIn *bufio.Reader, out io.Writer) {
 	_ = c.conn.SetDeadline(time.Time{}) // sessions go idle
 
 	var drained sync.WaitGroup
@@ -419,7 +439,21 @@ func splice(c *candidate, clientIn *bufio.Reader, out io.Writer) {
 		_ = writeBanner(out, c.banner)
 		_, _ = io.Copy(out, c.r)
 	})
+
+	watch := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			// closing the server conn ends the read pump; closing out gives
+			// the client its EOF, and ssh then closes its stdin, which ends
+			// the write pump.
+			_ = c.conn.Close()
+			closeOut(out)
+		case <-watch:
+		}
+	}()
 	_, _ = io.Copy(c.conn, clientIn)
+	close(watch)
 	_ = c.conn.Close()
 	drained.Wait() // drain the server->client pump before returning
 }

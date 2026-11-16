@@ -2,11 +2,13 @@ package sshtlsproxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +231,106 @@ func TestRunNoneDown(t *testing.T) {
 	err, _ := runClient(t, cfg, io.Discard)
 	if !errors.Is(err, ErrNoServer) {
 		t.Errorf("want ErrNoServer, got %v", err)
+	}
+}
+
+// startSilentServer accepts connections and never answers a banner: a peer
+// with transport up but no SSH protocol behind it.
+func startSilentServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 4096)
+				for {
+					if _, err := c.Read(buf); err != nil {
+						return
+					}
+				}
+			}(c)
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	return ln.Addr().String()
+}
+
+// The caller's deadline must bound the whole probe, not just the dials: a
+// 1s context against a 10s clock may not run to 10s.
+func TestProbeHonorsCallerDeadline(t *testing.T) {
+	host, portStr, err := net.SplitHostPort(startSilentServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	in, inWriter := io.Pipe()
+	defer inWriter.Close()
+	go func() { _, _ = inWriter.Write([]byte("SSH-2.0-test-client\r\n")) }()
+
+	cfg := baseConfig(t, host, port, port)
+	cfg.Timeout = 10 * time.Second
+
+	start := time.Now()
+	if err := Probe(ctx, cfg, in, io.Discard, io.Discard); !errors.Is(err, ErrNoServer) {
+		t.Fatalf("want ErrNoServer, got %v", err)
+	}
+	elapsed := time.Since(start)
+	t.Logf("probe ran %v against a 10s clock under a 1s context", elapsed.Round(10*time.Millisecond))
+	if elapsed > 3*time.Second {
+		t.Fatalf("probe ran %v; the caller deadline was ignored", elapsed)
+	}
+}
+
+// Cancelling the caller's context ends a spliced session; the probe clock
+// must not be what bounds it.
+func TestSpliceEndsOnCancel(t *testing.T) {
+	host, portStr, err := net.SplitHostPort(startBannerServer(t, "SSH-2.0-server", "", "", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	clientToProxy, proxyIn := net.Pipe()
+	proxyOut, proxyToClient := net.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- Probe(ctx, baseConfig(t, host, port, port), proxyIn, proxyOut, io.Discard) }()
+
+	if _, err := fmt.Fprintf(clientToProxy, "SSH-2.0-test-client\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	clientOut := bufio.NewReader(proxyToClient)
+	if _, err := clientOut.ReadString('\n'); err != nil {
+		t.Fatalf("client read: %v", err)
+	}
+
+	cancel() // the caller ends the session
+	if _, err := clientOut.ReadString('\n'); !errors.Is(err, io.EOF) {
+		t.Fatalf("want EOF on the client side after cancel, got %v", err)
+	}
+	_ = clientToProxy.Close() // ssh exits, closing its stdin
+	if err := <-done; err != nil {
+		t.Fatalf("session ended with %v, want nil", err)
 	}
 }
 
