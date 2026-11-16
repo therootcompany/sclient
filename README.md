@@ -312,8 +312,10 @@ unlimited mode: every dial has a deadline, and the whole probe is capped by
 the two clocks added together. A connect plus TLS handshake to a public host
 measured 10-130 ms. Once both dials settle, the banner exchange runs in its
 own window: a quarter of the connect clock (never less than 300 ms), or what
-is left of the ceiling - never less than one grace period (150 ms). A
-blackholed port can therefore never starve a ready candidate's banner.
+is left of the ceiling - never less than one grace period (150 ms), with each
+candidate's read deadline 20 ms inside it so a silent peer reports a banner read
+timeout rather than a closed socket. A blackholed port can therefore never starve
+a ready candidate's banner.
 
 # API
 

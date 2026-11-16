@@ -123,15 +123,26 @@ func hostPort(t *testing.T, addr string) (string, int) {
 	return host, port
 }
 
+// The loopback clocks. A connect to 127.0.0.1 takes well under a millisecond
+// and a handshake against a test certificate a handful of them, so 250ms is
+// a hundred-fold margin: a stalled dial is reported in a quarter of a second,
+// never at the engine's 45s handshake default.
+const (
+	loopbackConnect   = 250 * time.Millisecond
+	loopbackHandshake = 250 * time.Millisecond
+)
+
 func baseConfig(t *testing.T, host string, sshPort, tlsPort int) Config {
 	t.Helper()
 	alpn := []string{"ssh"}
 	return Config{
-		Host:    host,
-		SSHPort: sshPort,
-		TLSPort: tlsPort,
-		ALPN:    alpn,
-		TLS:     &tls.Config{InsecureSkipVerify: true, NextProtos: alpn},
+		Host:       host,
+		SSHPort:    sshPort,
+		TLSPort:    tlsPort,
+		ALPN:       alpn,
+		TCPTimeout: loopbackConnect,
+		TLSTimeout: loopbackHandshake,
+		TLS:        &tls.Config{InsecureSkipVerify: true, NextProtos: alpn},
 	}
 }
 
@@ -318,13 +329,9 @@ func TestRunPlainWinsWhenTLSBlackholes(t *testing.T) {
 	_, sshPort := hostPort(t, sshAddr)
 
 	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
-	// Name the handshake clock: the stalled front is about the plain
-	// candidate getting its banner, not about waiting out the 45s default.
-	cfg.TCPTimeout = time.Second
-	cfg.TLSTimeout = 500 * time.Millisecond
 	start := time.Now()
 	err, lines := runClient(t, cfg, io.Discard)
-	t.Logf("probe ran %v against a 1s connect / 500ms handshake clock", time.Since(start).Round(10*time.Millisecond))
+	t.Logf("probe ran %v against the 250ms loopback clocks", time.Since(start).Round(10*time.Millisecond))
 	if err != nil {
 		t.Fatalf("err = %v; lines: %q", err, lines)
 	}
@@ -342,8 +349,6 @@ func TestRunBlackholedTLSHostMismatch(t *testing.T) {
 	_, sshPort := hostPort(t, sshAddr)
 
 	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
-	cfg.TCPTimeout = time.Second
-	cfg.TLSTimeout = 500 * time.Millisecond // the stalled handshake, not the 45s default
 	cfg.ServerName = "guest.example.com"
 	var diag strings.Builder
 	err, _ := runClient(t, cfg, &diag)
@@ -355,15 +360,16 @@ func TestRunBlackholedTLSHostMismatch(t *testing.T) {
 	}
 }
 
-// A candidate that connects late still gets a window: with a 200ms clock and a
-// plain peer that never answers, the report must show a banner read timeout,
-// not the write racing a connection the dial clock had already closed.
+// A candidate that connects late still gets a window: with a 100ms connect
+// clock and a plain peer that never answers, the report must show a banner
+// read timeout, not the write racing a connection the dial clock had already
+// closed. The exchange window is the 300ms grace floor, not the clock.
 func TestRunBannerWindowFloorOnShortTimeout(t *testing.T) {
 	sshAddr := startSilentServer(t)
 	_, sshPort := hostPort(t, sshAddr)
 
 	cfg := baseConfig(t, "127.0.0.1", sshPort, 1) // tls side refused
-	cfg.TCPTimeout = 200 * time.Millisecond
+	cfg.TCPTimeout = 100 * time.Millisecond
 	var diag strings.Builder
 	err, _ := runClient(t, cfg, &diag)
 	if !errors.Is(err, ErrNoServer) {
@@ -441,8 +447,9 @@ func TestRunSlowTLSFrontWins(t *testing.T) {
 	_, sshPort := hostPort(t, sshAddr)
 
 	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
-	cfg.TCPTimeout = time.Second
-	cfg.TLSTimeout = 2 * time.Second
+	// The handshake clock must outlast the fake certificate, while the grace
+	// (150ms) still cuts the connect clock: the handshake is on its own.
+	cfg.TLSTimeout = 1 * time.Second
 	start := time.Now()
 	err, lines := runClient(t, cfg, io.Discard)
 	t.Logf("probe ran %v; grace would have closed the handshake at 150ms", time.Since(start).Round(10*time.Millisecond))

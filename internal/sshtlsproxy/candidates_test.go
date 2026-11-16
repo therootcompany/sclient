@@ -117,9 +117,9 @@ func TestDialCandidateClockWording(t *testing.T) {
 
 // A refused port is not a timeout: the real error must survive.
 func TestDialCandidateRefusedPort(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
-	cfg := Config{Host: "127.0.0.1", TCPTimeout: 2 * time.Second}
+	cfg := Config{Host: "127.0.0.1", TCPTimeout: 200 * time.Millisecond}
 	c := dialCandidateTCP(ctx, cfg, 1, &net.Dialer{}, noopTransport)
 	if c.err == nil {
 		t.Fatal("expected a refused-port error")
@@ -152,7 +152,7 @@ func TestProbeWordingClockVsCaller(t *testing.T) {
 		return diag.String()
 	}
 
-	diag := probe(t.Context(), 300*time.Millisecond, 300*time.Millisecond)
+	diag := probe(t.Context(), 100*time.Millisecond, 100*time.Millisecond)
 	if !strings.Contains(diag, "timed out after") {
 		t.Errorf("the clock should read as a timeout: %s", diag)
 	}
@@ -168,7 +168,7 @@ func TestProbeWordingClockVsCaller(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		cancel()
 	}()
-	diag = probe(ctx, 10*time.Second, 10*time.Second)
+	diag = probe(ctx, 200*time.Millisecond, 200*time.Millisecond)
 	if !strings.Contains(diag, "canceled after") {
 		t.Errorf("a caller cancel should read as canceled: %s", diag)
 	}
@@ -196,11 +196,11 @@ func TestDialCandidatePlain(t *testing.T) {
 	cfg := Config{
 		Host:       "127.0.0.1",
 		ALPN:       []string{"ssh"},
-		TCPTimeout: 2 * time.Second,
+		TCPTimeout: 200 * time.Millisecond,
 	}
 	port, _ := splitPort(ln.Addr().String())
 
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 
 	c := dialCandidateTCP(ctx, cfg, port, &net.Dialer{}, noopTransport)
@@ -246,11 +246,11 @@ func TestDialCandidateTLS(t *testing.T) {
 	cfg := Config{
 		Host:       host,
 		ALPN:       []string{"ssh"},
-		TCPTimeout: 2 * time.Second,
-		TLSTimeout: 2 * time.Second,
+		TCPTimeout: 250 * time.Millisecond,
+		TLSTimeout: 250 * time.Millisecond,
 	}
 	insecure := &tls.Config{InsecureSkipVerify: true, NextProtos: cfg.ALPN}
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 
 	// insecure: handshake + alpn ok

@@ -117,7 +117,7 @@ func sniTLS(t *testing.T) (string, *atomic.Value) {
 // handshakes fails on the handshake clock instead of hanging.
 func TestDialTLSStalledHandshake(t *testing.T) {
 	remote := stallTLS(t)
-	tun := &Tunnel{TLSTimeout: 300 * time.Millisecond, InsecureSkipVerify: true}
+	tun := &Tunnel{TLSTimeout: 100 * time.Millisecond, InsecureSkipVerify: true}
 	start := time.Now()
 	_, err := tun.dialTLS(remote, tun.NextProtos)
 	if err == nil {
@@ -126,8 +126,8 @@ func TestDialTLSStalledHandshake(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want the deadline", err)
 	}
-	if el := time.Since(start); el < 250*time.Millisecond || el > 2*time.Second {
-		t.Fatalf("took %v, want ~300ms", el)
+	if el := time.Since(start); el < 90*time.Millisecond || el > 500*time.Millisecond {
+		t.Fatalf("took %v, want ~100ms", el)
 	}
 }
 
@@ -136,7 +136,7 @@ func TestDialTLSStalledHandshake(t *testing.T) {
 // checked against.
 func TestDialTLSServerName(t *testing.T) {
 	remote, seen := sniTLS(t)
-	tun := &Tunnel{TLSTimeout: 2 * time.Second, ServerName: "alt.example", InsecureSkipVerify: true}
+	tun := &Tunnel{TLSTimeout: 250 * time.Millisecond, ServerName: "alt.example", InsecureSkipVerify: true}
 	conn, err := tun.dialTLS(remote, tun.NextProtos)
 	if err != nil {
 		t.Fatalf("dialTLS: %v", err)
@@ -162,7 +162,7 @@ func TestTunnelTLSConfigServerName(t *testing.T) {
 // verify the certificate, not fail on an incomplete config.
 func TestDialTLSDefaultsServerName(t *testing.T) {
 	remote := readyTLS(t)
-	tun := &Tunnel{TLSTimeout: 2 * time.Second} // no ServerName, no InsecureSkipVerify
+	tun := &Tunnel{TLSTimeout: 250 * time.Millisecond} // no ServerName, no InsecureSkipVerify
 	_, err := tun.dialTLS(remote, tun.NextProtos)
 	if err == nil {
 		t.Fatal("a self-signed certificate must fail verification")
@@ -202,7 +202,7 @@ func TestTunnelTimeouts(t *testing.T) {
 // handshake runs on its own clock inside the ceiling.
 func TestDialTLSUnnamedClocksAreBounded(t *testing.T) {
 	remote := stallTLS(t)
-	tun := &Tunnel{TCPTimeout: 300 * time.Millisecond, TLSTimeout: 300 * time.Millisecond, InsecureSkipVerify: true}
+	tun := &Tunnel{TCPTimeout: 100 * time.Millisecond, TLSTimeout: 100 * time.Millisecond, InsecureSkipVerify: true}
 	start := time.Now()
 	_, err := tun.dialTLS(remote, tun.NextProtos)
 	elapsed := time.Since(start)
@@ -212,15 +212,15 @@ func TestDialTLSUnnamedClocksAreBounded(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want the deadline", err)
 	}
-	if elapsed < 300*time.Millisecond || elapsed > 2*time.Second {
-		t.Fatalf("took %v, want the 300ms handshake clock", elapsed)
+	if elapsed < 90*time.Millisecond || elapsed > 500*time.Millisecond {
+		t.Fatalf("took %v, want the 100ms handshake clock", elapsed)
 	}
 }
 
 // The deadline is not per-phase: a handshake inside the budget succeeds.
 func TestDialTLSReady(t *testing.T) {
 	remote := readyTLS(t)
-	tun := &Tunnel{TLSTimeout: 2 * time.Second, InsecureSkipVerify: true}
+	tun := &Tunnel{TLSTimeout: 250 * time.Millisecond, InsecureSkipVerify: true}
 	conn, err := tun.dialTLS(remote, tun.NextProtos)
 	if err != nil {
 		t.Fatalf("dialTLS: %v", err)
@@ -337,7 +337,7 @@ func TestHandleConnectionSniffsSSH(t *testing.T) {
 		t.Cleanup(func() { _ = client.Close(); _ = peer.Close() })
 		go func() { _, _ = peer.Write([]byte(tc.client)) }()
 
-		tun := &Tunnel{TLSTimeout: 2 * time.Second, InsecureSkipVerify: true}
+		tun := &Tunnel{TLSTimeout: 250 * time.Millisecond, InsecureSkipVerify: true}
 		done := make(chan struct{})
 		go func() { tun.handleConnection(remote, client); close(done) }()
 
@@ -361,7 +361,7 @@ func TestHandleConnectionSniffsSSH(t *testing.T) {
 // Verbose says what the dial negotiated; silent mode says nothing.
 func TestReportConnectVerbose(t *testing.T) {
 	remote := readyTLS(t)
-	tun := &Tunnel{TLSTimeout: 2 * time.Second, InsecureSkipVerify: true, Verbose: true}
+	tun := &Tunnel{TLSTimeout: 250 * time.Millisecond, InsecureSkipVerify: true, Verbose: true}
 	conn, err := tun.dialTLS(remote, tun.NextProtos)
 	if err != nil {
 		t.Fatalf("dialTLS: %v", err)
