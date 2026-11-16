@@ -319,7 +319,9 @@ func TestRunPlainWinsWhenTLSBlackholes(t *testing.T) {
 	_, sshPort := hostPort(t, sshAddr)
 
 	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
+	start := time.Now()
 	err, lines := runClient(t, cfg, io.Discard)
+	t.Logf("probe ran %v against a 3s clock", time.Since(start).Round(10*time.Millisecond))
 	if err != nil {
 		t.Fatalf("err = %v; lines: %q", err, lines)
 	}
@@ -345,6 +347,28 @@ func TestRunBlackholedTLSHostMismatch(t *testing.T) {
 	}
 	if !strings.Contains(diag.String(), `declares router.internal, not "guest.example.com"`) {
 		t.Errorf("expected the host mismatch in the report, got: %s", diag.String())
+	}
+}
+
+// A candidate that connects late still gets a window: with a 200ms clock and a
+// plain peer that never answers, the report must show a banner read timeout,
+// not the write racing a connection the dial clock had already closed.
+func TestRunBannerWindowFloorOnShortTimeout(t *testing.T) {
+	sshAddr := startSilentServer(t)
+	_, sshPort := hostPort(t, sshAddr)
+
+	cfg := baseConfig(t, "127.0.0.1", sshPort, 1) // tls side refused
+	cfg.Timeout = 200 * time.Millisecond
+	var diag strings.Builder
+	err, _ := runClient(t, cfg, &diag)
+	if !errors.Is(err, ErrNoServer) {
+		t.Fatalf("want ErrNoServer, got %v; diag: %s", err, diag.String())
+	}
+	if strings.Contains(diag.String(), "closed network connection") {
+		t.Errorf("the banner write lost the race with the dial clock: %s", diag.String())
+	}
+	if !strings.Contains(diag.String(), "read banner") {
+		t.Errorf("expected a banner read error, got: %s", diag.String())
 	}
 }
 

@@ -372,12 +372,15 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 
 	// The banner exchange gets its own clock. The dial clock is already spent
 	// when the grace closed a blackholed sibling, and reusing it would cut off
-	// a ready candidate before its banner is even sent.
+	// a ready candidate before its banner is even sent. The window is the
+	// smaller of a quarter of the clock (floor 300ms) and what is left of it,
+	// never less than one grace period - otherwise a candidate that connected
+	// late gets no chance to answer at all.
 	bannerWindow := max(2*minGrace, cfg.Timeout/4)
-	bannerDeadline := time.Now().Add(bannerWindow)
-	if dl, ok := ctx.Deadline(); ok && dl.Before(bannerDeadline) {
-		bannerDeadline = dl
+	if remaining := time.Until(deadline); remaining < bannerWindow {
+		bannerWindow = max(minGrace, remaining)
 	}
+	bannerDeadline := time.Now().Add(bannerWindow)
 	bannerClock, cancelBanner := context.WithDeadline(ctx, bannerDeadline)
 	defer cancelBanner()
 	debugf("banner: exchange window %v", bannerWindow)
