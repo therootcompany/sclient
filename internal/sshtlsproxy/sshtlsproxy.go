@@ -351,7 +351,7 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	}
 
 	clientBanner, clientErr := takeClientResult(clientDone, clock)
-	timer.Stop() // the clock stays stopped: the session is not probe-bounded
+	timer.Stop() // the dial clock is done; the session is not probe-bounded
 	if clientErr != nil {
 		for _, c := range ready {
 			_ = c.conn.Close()
@@ -370,8 +370,20 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 		return ErrNoServer
 	}
 
+	// The banner exchange gets its own clock. The dial clock is already spent
+	// when the grace closed a blackholed sibling, and reusing it would cut off
+	// a ready candidate before its banner is even sent.
+	bannerWindow := max(2*minGrace, cfg.Timeout/4)
+	bannerDeadline := time.Now().Add(bannerWindow)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(bannerDeadline) {
+		bannerDeadline = dl
+	}
+	bannerClock, cancelBanner := context.WithDeadline(ctx, bannerDeadline)
+	defer cancelBanner()
+	debugf("banner: exchange window %v", bannerWindow)
+
 	// banner exchange with the same grace rule as the dials
-	exchangeBanners(clock, deadline, ready, clientBanner, cfg.ServerName, debugf)
+	exchangeBanners(bannerClock, bannerDeadline, ready, clientBanner, cfg.ServerName, debugf)
 
 	chosen := pickCandidate(ready)
 	if chosen == nil {

@@ -308,6 +308,46 @@ func TestRunTLSHostMismatch(t *testing.T) {
 	}
 }
 
+// TestRunPlainWinsWhenTLSBlackholes: 443 accepts TCP but never handshakes,
+// so the grace clock closes it. The plain candidate is already ready - it
+// must still get its banner exchange. Reusing the spent dial clock for the
+// exchange kills the write, so the probe reports nothing usable.
+func TestRunPlainWinsWhenTLSBlackholes(t *testing.T) {
+	tlsAddr := startSilentServer(t)
+	sshAddr := startBannerServer(t, "SSH-2.0-plain-server", "", "", nil)
+	_, tlsPort := hostPort(t, tlsAddr)
+	_, sshPort := hostPort(t, sshAddr)
+
+	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
+	err, lines := runClient(t, cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("err = %v; lines: %q", err, lines)
+	}
+	if len(lines) < 1 || lines[0] != "SSH-2.0-plain-server" {
+		t.Errorf("banners = %q, want the plain server's", lines)
+	}
+}
+
+// The same blackholed front, but the plain sshd declares a host that is not
+// the one asked for: the mismatch must be reported, not the write race.
+func TestRunBlackholedTLSHostMismatch(t *testing.T) {
+	tlsAddr := startSilentServer(t)
+	sshAddr := startBannerServer(t, "SSH-2.0-OpenSSH_9.6 tlsrouter-v0.9.4 hostname:router.internal", "", "", nil)
+	_, tlsPort := hostPort(t, tlsAddr)
+	_, sshPort := hostPort(t, sshAddr)
+
+	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
+	cfg.ServerName = "guest.example.com"
+	var diag strings.Builder
+	err, _ := runClient(t, cfg, &diag)
+	if !errors.Is(err, ErrNoServer) {
+		t.Fatalf("want ErrNoServer, got %v; diag: %s", err, diag.String())
+	}
+	if !strings.Contains(diag.String(), `declares router.internal, not "guest.example.com"`) {
+		t.Errorf("expected the host mismatch in the report, got: %s", diag.String())
+	}
+}
+
 // TestRunNoneDown: both refused; exit 255.
 func TestRunNoneDown(t *testing.T) {
 	cfg := baseConfig(t, "127.0.0.1", 1, 1)

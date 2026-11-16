@@ -302,7 +302,9 @@ ProxyCommand with its stderr swallowed.
 communicate: the TCP connect and the TLS handshake share one deadline.
 Both modes default to 3 seconds; `--timeout 0` is the default, not "no
 limit" - every dial has a deadline. A connect plus TLS handshake to a
-public host measured 10-130 ms.
+public host measured 10-130 ms. Once both dials settle, the banner exchange
+runs in its own bounded window - a quarter of the clock, never less than
+300 ms - so a blackholed port cannot starve a ready candidate's banner.
 
 # API
 
