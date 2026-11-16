@@ -10,12 +10,10 @@ once is the whole point** — the tool determines which to accept:
 - If the 443 connection terminates TLS with the correct hostname
   (and ALPN), answers the SSH banner, it is certainly ssh-over-tls →
   use it.
-- If the 443 side terminates TLS with the correct hostname but
-  WITHOUT the ALPN, it may still be forwarding to the intended sshd
-  (ALPN is a routing hint on the fleet fronts, not a security
-  property). Send the banner anyway — there is no loss in trying —
-  and use it if it answers; the "TLS negotiated ALPN (none), ..."
-  note goes into the failure report if it does not.
+- If the 443 side terminates TLS but will not negotiate the ALPN you
+  asked for, that front has no ssh route for this name: the candidate
+  is closed at the handshake and no banner is sent to it. (`--alpn ''`
+  turns the gate off for fronts that do not speak ALPN at all.)
 - If the 443 side does not, but 22 answers with an SSH banner, it is
   most likely plain ssh → use it.
 - Neither answers → no usable server (report to stderr, exit 255).
@@ -73,9 +71,24 @@ ProxyCommand sclient --ssh-port %p %h:443
 ```
 
 Two clocks bound a dial: `--tcp-timeout` (default 5s) for the connect and
-`--tls-timeout` (default 45s) for the handshake, measured from the connect.
-Zero means "the default"; there is no unlimited mode - every dial has a
-deadline, and the probe is capped by the two clocks added together.
+`--tls-timeout` for the handshake, measured from the connect. Unset, the
+handshake clock is **auto**: twice that candidate's own connect, floored at
+150ms. Zero means "auto", never "unlimited" - every dial has a deadline.
+
+Resolve each port independently, as fast as it can be resolved (do not
+serialize):
+
+- connect, handshake, and banner each run on their own clock;
+- a blackholed sibling connect is cut by the grace (150ms after the first
+  transport-up);
+- a candidate confirmed by the banner gate ends the probe - a plain banner
+  that *declares* the name we dialled is proof on its own, so the TLS
+  handshake is closed rather than allowed to run out its clock (this holds
+  even when the operator named a long `--tls-timeout`);
+- a banner that declares a different host is a refusal, immediately.
+
+The probe is still capped by the connect clock plus the longest handshake, so
+nothing runs forever.
 
 ## Test hosts
 

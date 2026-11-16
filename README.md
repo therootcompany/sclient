@@ -90,7 +90,9 @@ sclient [flags] <remote> <local>
   - `--tcp-timeout <seconds>` the deadline for the TCP connect (DNS included).
     Default 5; `0` means "the default", not "unlimited".
   - `--tls-timeout <seconds>` the deadline for the TLS handshake, measured from
-    the connect. Default 45 - a front issuing an ACME certificate is slow.
+    the connect. `0` (the default) is **auto**: twice that candidate's own
+    connect, floored at 150 ms. Name a number only for a front that issues a
+    certificate on first use.
 - remote
   - must have servername (i.e. example.com)
   - port is optional (default is 443)
@@ -118,15 +120,15 @@ sclient [flags] <remote> <local>
     	seconds for the TCP connect, DNS included (default 5; 0 = the default,
     	there is no unlimited mode)
   -tls-timeout float
-    	seconds for the TLS handshake, measured from the connect (default 45;
-    	0 = the default)
+    	seconds for the TLS handshake, measured from the connect (0 = auto:
+    	twice that connect, floor 150ms)
   -v	alias for --verbose
   -verbose
     	show what each dial did
   -tcp-timeout float
     	seconds for the TCP connect (default 5; 0 = the default)
   -tls-timeout float
-    	seconds for the TLS handshake (default 45; 0 = the default)
+    	seconds for the TLS handshake (0 = auto: twice the connect, floor 150ms)
 
 # Examples
 
@@ -255,8 +257,8 @@ Host *
   banner, or the banner it answered with and the host it declared.
 
 Flags: `--ssh-port` (default 22), `--tls-port` (default 443), `--alpn`
-(default `ssh`), `--tcp-timeout` and `--tls-timeout` seconds (5 and 45),
-`--servername`, `-k/--insecure`, `-v/--verbose`, `-s/--silent`.
+(default `ssh`), `--tcp-timeout` (5s) and `--tls-timeout` (auto: twice the
+connect), `--servername`, `-k/--insecure`, `-v/--verbose`, `-s/--silent`.
 The same values can
 come from
 `SSHTLSPROXY_*` environment variables when the flag is not set.
@@ -306,14 +308,25 @@ The failure report goes to sclient's stderr — there is no
 ProxyCommand with its stderr swallowed.
 
 Two clocks bound a dial: `--tcp-timeout` (default 5s) for the connect, and
-`--tls-timeout` (default 45s) for the handshake, measured from the connect - a
-front issuing an ACME certificate can take tens of seconds. There is no
-unlimited mode: every dial has a deadline, and the whole probe is capped by
-the two clocks added together. A connect plus TLS handshake to a public host
-measured 10-130 ms. Once both dials settle, the banner exchange runs in its
-own window: a quarter of the connect clock (never less than 300 ms), or what
-is left of the ceiling - never less than one grace period (150 ms), with each
-candidate's read deadline 20 ms inside it so a silent peer reports a banner read
+`--tls-timeout` for the handshake, measured from the connect. Unset, the
+handshake clock is **auto**: twice that candidate's own connect, floored at
+150 ms. Measured against public fronts a handshake runs 0.5-1.4x the connect
+(10-130 ms end to end), so 2x is roomy without letting a dead front hold ssh for
+tens of seconds. Name a number for a front that issues a certificate on first
+use.
+
+Each port is resolved independently - connect, handshake, banner, each on its
+own clock, each reported the moment it ends. The grace closes a blackholed port
+150 ms after the first socket comes up, and a plain banner that declares the
+name you dialled is proof enough on its own: the TLS handshake is cut short
+instead of running out its clock. A stalled front reports
+`tls <addr>: timed out after 150ms: the TLS handshake did not complete`.
+There is still no unlimited mode: the probe is capped by the connect clock plus
+the longest handshake any candidate can spend.
+
+A ready candidate's banner exchange runs in its own window: a quarter of the
+connect clock (never less than 300 ms), or what is left of the ceiling - never
+less than one grace period (150 ms), with each read deadline 20 ms inside it so
 timeout rather than a closed socket. A blackholed port can therefore never starve
 a ready candidate's banner.
 

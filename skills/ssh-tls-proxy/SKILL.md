@@ -37,15 +37,15 @@ Host *
 ```
 
 Flags (values shown are defaults): `--ssh-port 22`, `--tls-port 443`,
-`--alpn ssh` (list), `--tcp-timeout` and `--tls-timeout` (float **seconds**;
-the connect clock and the handshake clock, default 5 and 45 - the probe is
-capped by the two added together, there is no unlimited mode), `--servername`
-(default: host, SNI/verification name), `-k/--insecure`, `-v/--verbose`,
-`-s/--silent`, `-V`/`help`. Env fallbacks `SSHTLSPROXY_SSH_PORT`, `_TLS_PORT`,
-`_ALPN`, `_TCP_TIMEOUT`, `_TLS_TIMEOUT`, `_SERVERNAME` fill only flags the
-operator did not set (an explicit flag always wins over env). Exit codes: 0
-session done, 1 client-side failure, 2 usage error, **255 no usable server**
-(ssh convention).
+`--alpn ssh` (list), `--tcp-timeout` (float **seconds**, default 5) and
+`--tls-timeout` (float seconds; `0` = auto, twice that candidate's own connect,
+floored at 150ms — name a number only for a front that issues a certificate on
+first use), `--servername` (default: host, SNI/verification name),
+`-k/--insecure`, `-v/--verbose`, `-s/--silent`, `-V`/`help`. Env fallbacks
+`SSHTLSPROXY_SSH_PORT`, `_TLS_PORT`, `_ALPN`, `_TCP_TIMEOUT`, `_TLS_TIMEOUT`,
+`_SERVERNAME` fill only flags the operator did not set (an explicit flag always
+wins over env). Exit codes: 0 session done, 1 client-side failure, 2 usage
+error, **255 no usable server** (ssh convention).
 
 ## Selection semantics
 
