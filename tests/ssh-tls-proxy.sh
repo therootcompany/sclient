@@ -15,7 +15,7 @@ SSH_OPTS="-T -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -
 
 # 1a. standalone against a dead host: report on stderr, exit 255
 # (ssh discards a ProxyCommand's stderr unless ControlPath is none)
-out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/ssh-tls-proxy --timeout 1 192.0.2.1 2>&1)
+out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/ssh-tls-proxy --tcp-timeout 1 192.0.2.1 2>&1)
 code=$?
 [ "$code" = 255 ] || note "standalone: exit=$code, want 255"
 case "$out" in
@@ -25,7 +25,7 @@ esac
 
 # 1b. via ssh: exit 255 (ssh prints its own message)
 out=$(ssh $SSH_OPTS \
-  -o "ProxyCommand=./bin/ssh-tls-proxy --timeout 1 192.0.2.1" \
+  -o "ProxyCommand=./bin/ssh-tls-proxy --tcp-timeout 1 192.0.2.1" \
   192.0.2.1 true 2>&1)
 code=$?
 [ "$code" = 255 ] || note "via ssh: exit=$code, want 255"
@@ -35,7 +35,7 @@ code=$?
 # when `script` is unavailable (no pty to allocate).
 if command -v script >/dev/null 2>&1; then
   out=$(script -q /dev/null sh -c \
-    'ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlPath=./agents/tmp/e2e-ctl -o ControlPersist=10s -o "ProxyCommand=./bin/ssh-tls-proxy --timeout 1 192.0.2.1" 192.0.2.1 true' 2>&1)
+    'ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlPath=./agents/tmp/e2e-ctl -o ControlPersist=10s -o "ProxyCommand=./bin/ssh-tls-proxy --tcp-timeout 1 192.0.2.1" 192.0.2.1 true' 2>&1)
   case "$out" in
     *"no usable server"*) ;;
     *) note "ControlPersist: report did not reach the tty: $out" ;;
@@ -61,10 +61,10 @@ LIVE_OPTS="$SSH_OPTS -o ControlPath=none"
 
 # 4a. example.com: TLS front without the ALPN, blackholed 22.
 # Fast-fail: the transport-up grace must end the probe well before
-# --timeout (regression guard for the 3s -> ~200ms fix).
+# the connect clock (regression guard for the grace fast-fail).
 s=$(date +%s)
 out=$(ssh $LIVE_OPTS \
-  -o "ProxyCommand=./bin/ssh-tls-proxy --timeout 3 --alpn ssh --ssh-port 22 example.com" \
+  -o "ProxyCommand=./bin/ssh-tls-proxy --tcp-timeout 3 --alpn ssh --ssh-port 22 example.com" \
   example.com true 2>&1)
 code=$?
 dt=$(( $(date +%s) - s ))
@@ -78,7 +78,7 @@ esac
 # 4b. github.com: plain ssh on :22, HTTPS (no ALPN ssh) on :443.
 # The plain path must be chosen.
 out=$(ssh $LIVE_OPTS \
-  -o "ProxyCommand=./bin/ssh-tls-proxy --timeout 3 --alpn ssh --ssh-port 22 github.com" \
+  -o "ProxyCommand=./bin/ssh-tls-proxy --tcp-timeout 3 --alpn ssh --ssh-port 22 github.com" \
   github.com true 2>&1)
 case "$out" in
   *"using ssh (github.com:22)"*) ;;
@@ -89,7 +89,7 @@ esac
 # the TLS front without ALPN ssh. The plain path must be chosen. (Auth
 # may fail; the selection line is the assertion.)
 out=$(ssh $LIVE_OPTS \
-  -o "ProxyCommand=./bin/ssh-tls-proxy --timeout 3 --alpn ssh --ssh-port 22 vms.slc1.bnna.net" \
+  -o "ProxyCommand=./bin/ssh-tls-proxy --tcp-timeout 3 --alpn ssh --ssh-port 22 vms.slc1.bnna.net" \
   vms.slc1.bnna.net true 2>&1)
 case "$out" in
   *"using ssh (vms.slc1.bnna.net:22)"*) ;;
@@ -101,7 +101,7 @@ esac
 # Both live: the TLS-terminated path must win.
 for GUEST in ip.bnna.net pw.bnna.net; do
   out=$(ssh $LIVE_OPTS \
-    -o "ProxyCommand=./bin/ssh-tls-proxy --timeout 3 --alpn ssh --ssh-port 22 $GUEST" \
+    -o "ProxyCommand=./bin/ssh-tls-proxy --tcp-timeout 3 --alpn ssh --ssh-port 22 $GUEST" \
     "$GUEST" true 2>&1)
   case "$out" in
     *"using tls ($GUEST:443)"*) ;;

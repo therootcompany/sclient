@@ -72,8 +72,10 @@ Documented ssh_config form - the TLS port is written out, never implied:
 ProxyCommand sclient --ssh-port %p %h:443
 ```
 
-`--timeout` is always bounded: `0` means "the default" (3s), never
-"unlimited". Every dial has a deadline.
+Two clocks bound a dial: `--tcp-timeout` (default 5s) for the connect and
+`--tls-timeout` (default 45s) for the handshake, measured from the connect.
+Zero means "the default"; there is no unlimited mode - every dial has a
+deadline, and the probe is capped by the two clocks added together.
 
 ## Test hosts
 

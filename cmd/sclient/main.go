@@ -73,7 +73,8 @@ func main() {
 	var verbose bool
 	var ssh bool
 	var sshPort int
-	var timeoutSec float64
+	var tcpTimeoutSec float64
+	var tlsTimeoutSec float64
 
 	flag.Usage = usage
 
@@ -87,7 +88,8 @@ func main() {
 	flag.BoolVar(&silent, "silent", false, "less verbose output")
 	flag.BoolVar(&ssh, "ssh", false, "SSH mode shorthand for --ssh-port 22; naming --ssh-port does the same thing")
 	flag.IntVar(&sshPort, "ssh-port", 0, "plain-SSH port to probe alongside <remote>: turns on the dual-port SSH probe (TLS port = <remote>:<port>, default 443). 0 = plain TLS tunnel")
-	flag.Float64Var(&timeoutSec, "timeout", 0, "seconds until a remote connection is ready to communicate (TCP connect + TLS handshake share one deadline). 0 = the default, 3s. There is no unlimited mode.")
+	flag.Float64Var(&tcpTimeoutSec, "tcp-timeout", 0, "seconds for the TCP connect (DNS included). 0 = the default, 5s")
+	flag.Float64Var(&tlsTimeoutSec, "tls-timeout", 0, "seconds for the TLS handshake, measured from the connect. 0 = the default, 45s (a front issuing an ACME certificate is slow)")
 
 	flag.Parse()
 
@@ -108,10 +110,17 @@ func main() {
 		os.Exit(2)
 	}
 	port := sshPortFor(ssh, sshPort)
-	if timeoutSec < 0 {
-		fmt.Fprintf(os.Stderr, "sclient: --timeout must be 0 (the default) or a positive number of seconds\n")
-		usage()
-		os.Exit(2)
+	for name, raw := range map[string]float64{"--tcp-timeout": tcpTimeoutSec, "--tls-timeout": tlsTimeoutSec} {
+		if raw < 0 {
+			fmt.Fprintf(os.Stderr, "sclient: %s must be 0 (the default) or a positive number of seconds\n", name)
+			usage()
+			os.Exit(2)
+		}
+	}
+
+	clk := timing{
+		connect:   seconds(tcpTimeoutSec),
+		handshake: seconds(tlsTimeoutSec),
 	}
 
 	alpns := plainALPN(alpnList, set["alpn"])
@@ -137,13 +146,14 @@ func main() {
 		Silent:             silent,
 		Verbose:            verbose,
 		NextProtos:         alpns,
-		Timeout:            time.Duration(plainTimeout(timeoutSec) * float64(time.Second)),
+		TCPTimeout:         clk.connect,
+		TLSTimeout:         clk.handshake,
 	}
 
 	if port > 0 {
 		// SSH mode replaces the Tunnel: the engine is the transport, and
 		// runSSH only returns when the listener is shut down.
-		runSSH(remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, verbose, port, timeoutSec)
+		runSSH(remotestr, localstr, servername, sshALPN(alpnList, set["alpn"]), insecure, silent, verbose, port, clk)
 		return
 	}
 
@@ -222,25 +232,10 @@ func localAddr(s string) (string, int, error) {
 	return host, p, nil
 }
 
-// defaultPlainTimeout bounds one plain (non-SSH) remote connect - TCP
-// connect plus TLS handshake - in seconds. OpenSSH's ConnectTimeout has no
-// default, so there is no convention to copy; 3s matches the engine's probe
-// clock and is roughly 20x the measured connect+handshake for a public host.
-const defaultPlainTimeout = 3
-
-// plainTimeout is the operator's --timeout. Zero - the default - takes the
-// default: every dial has a deadline, there is no unlimited mode.
-func plainTimeout(raw float64) float64 {
-	if raw > 0 {
-		return raw
-	}
-	return defaultPlainTimeout
-}
-
 // runSSH is the SSH transport: the stdio pair, or every accepted local
 // connection, goes through the engine. The local side must be an SSH
 // client; it returns when Ctrl-C or SIGTERM closes the listener.
-func runSSH(remotestr, localstr, servername string, alpns []string, insecure, silent, verbose bool, sshPort int, timeoutSec float64) {
+func runSSH(remotestr, localstr, servername string, alpns []string, insecure, silent, verbose bool, sshPort int, clk timing) {
 	// Ctrl-C or SIGTERM cancels in-flight probes and sessions. Plain mode has
 	// no shutdown path, so it keeps the OS default: the signal ends the
 	// process.
@@ -253,7 +248,7 @@ func runSSH(remotestr, localstr, servername string, alpns []string, insecure, si
 		usage()
 		os.Exit(2)
 	}
-	cfg := newSSHConfig(host, tlsPort, servername, alpns, insecure, silent, verbose, sshPort, timeoutSec)
+	cfg := newSSHConfig(host, tlsPort, servername, alpns, insecure, silent, verbose, sshPort, clk)
 
 	if localstr == "-" || localstr == "|" {
 		err := sshtlsproxy.Probe(ctx, cfg, os.Stdin, os.Stdout, os.Stderr)
@@ -307,7 +302,7 @@ func sshListen(ctx context.Context, cfg sshtlsproxy.Config, ln net.Listener, err
 // newSSHConfig builds the engine config from an already-parsed host and
 // TLS port. The engine uses a supplied tls.Config as-is, so the TLS 1.2
 // floor comes from here.
-func newSSHConfig(host string, tlsPort int, servername string, alpns []string, insecure, silent, verbose bool, sshPort int, timeoutSec float64) sshtlsproxy.Config {
+func newSSHConfig(host string, tlsPort int, servername string, alpns []string, insecure, silent, verbose bool, sshPort int, clk timing) sshtlsproxy.Config {
 	if servername == "" {
 		servername = host // an IP literal: Go omits SNI itself
 	}
@@ -317,8 +312,9 @@ func newSSHConfig(host string, tlsPort int, servername string, alpns []string, i
 		ServerName: servername, // the name the banner host check is against
 		SSHPort:    sshPort,    // the flag that turned this mode on
 		TLSPort:    tlsPort,
-		ALPN:       alpns,                                            // as offered; ssh mode always supplies a list
-		Timeout:    time.Duration(timeoutSec * float64(time.Second)), // 0: the engine default 3s
+		ALPN:       alpns,         // as offered; ssh mode always supplies a list
+		TCPTimeout: clk.connect,   // 0: the engine default 5s
+		TLSTimeout: clk.handshake, // 0: the engine default 45s
 		Silent:     silent,
 		Verbose:    verbose,
 		TLS: &tls.Config{
@@ -332,6 +328,24 @@ func newSSHConfig(host string, tlsPort int, servername string, alpns []string, i
 
 // defaultSSHPort is what --ssh means: the port SSH is normally on.
 const defaultSSHPort = 22
+
+// timing is the operator's clock for one probe: the connect deadline and the
+// handshake deadline. Zero means "the engine default"; the ceiling is the two
+// clocks added together, so every dial has a deadline and there is no
+// unlimited mode.
+type timing struct {
+	connect   time.Duration
+	handshake time.Duration
+}
+
+// seconds turns a flag value into a duration; a non-positive value leaves the
+// field at zero, which the engine reads as "use the default".
+func seconds(raw float64) time.Duration {
+	if raw <= 0 {
+		return 0
+	}
+	return time.Duration(raw * float64(time.Second))
+}
 
 // sshPortFor resolves --ssh against --ssh-port. Naming a port IS the mode;
 // --ssh is the shorthand for the usual 22. An explicit port always wins, so

@@ -14,7 +14,7 @@ SSH_OPTS="-T -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -
 SSH_PORT=22
 
 # 1a. standalone against a dead host: informative stderr, exit 255
-out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --ssh-port "$SSH_PORT" --timeout 1 192.0.2.1:443 2>&1)
+out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --ssh-port "$SSH_PORT" --tcp-timeout 1 192.0.2.1:443 2>&1)
 code=$?
 [ "$code" = 255 ] || note "standalone: exit=$code, want 255"
 case "$out" in
@@ -23,7 +23,7 @@ case "$out" in
 esac
 
 # 1b. --ssh is shorthand for --ssh-port 22: same mode, same probe of :22
-out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --ssh -v --timeout 1 192.0.2.1:443 2>&1)
+out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --ssh -v --tcp-timeout 1 192.0.2.1:443 2>&1)
 code=$?
 [ "$code" = 255 ] || note "--ssh alone: exit=$code, want 255"
 case "$out" in
@@ -32,7 +32,7 @@ case "$out" in
 esac
 
 # 1c. -v/--verbose prints every candidate and its banner
-out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --verbose --ssh-port "$SSH_PORT" --timeout 1 192.0.2.1 2>&1)
+out=$(printf 'SSH-2.0-e2e\r\n' | timeout 10 ./bin/sclient --verbose --ssh-port "$SSH_PORT" --tcp-timeout 1 192.0.2.1 2>&1)
 case "$out" in
   *"dial: ssh"*) ;;
   *) note "verbose: no 'dial: ssh' line: $out" ;;
@@ -42,14 +42,14 @@ case "$out" in
   *) note "verbose: no 'dial: tls' line: $out" ;;
 esac
 
-# 1d. --timeout 0 is the default clock, not "forever": a dead host still
-# fails, and it fails bounded (well under 10s).
+# 1d. the clocks are bounded, never "forever": a dead host fails on the
+# connect clock.
 start=$(date +%s)
-out=$(printf 'SSH-2.0-e2e\r\n' | timeout 20 ./bin/sclient --ssh-port "$SSH_PORT" --timeout 0 192.0.2.1:443 2>&1)
+out=$(printf 'SSH-2.0-e2e\r\n' | timeout 20 ./bin/sclient --ssh-port "$SSH_PORT" --tcp-timeout 2 192.0.2.1:443 2>&1)
 code=$?
 elapsed=$(( $(date +%s) - start ))
-[ "$code" = 255 ] || note "timeout 0: exit=$code, want 255"
-[ "$elapsed" -le 8 ] || note "timeout 0: took ${elapsed}s, want the 3s clock"
+[ "$code" = 255 ] || note "bounded clocks: exit=$code, want 255"
+[ "$elapsed" -le 6 ] || note "bounded clocks: took ${elapsed}s, want the 2s connect clock"
 
 # 2. version + usage
 ./bin/sclient -V | grep -q sclient || note "-V does not print the name"
@@ -68,7 +68,7 @@ elapsed=$(( $(date +%s) - start ))
 # success is not required, so key rotation will not break the suite.
 if [ "${LIVE:-0}" = 1 ]; then
   out=$(ssh $SSH_OPTS \
-    -o "ProxyCommand=./bin/sclient --ssh-port $SSH_PORT --timeout 3 %h:443" \
+    -o "ProxyCommand=./bin/sclient --ssh-port $SSH_PORT --tcp-timeout 3 %h:443" \
     pw.bnna.net true 2>&1)
   case "$out" in
     *"using tls"*) ;;

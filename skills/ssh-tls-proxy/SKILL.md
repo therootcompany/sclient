@@ -33,18 +33,19 @@ must exist on every machine whose ssh_config uses it.
 
 ```
 Host *
-    ProxyCommand ssh-tls-proxy --timeout 3 --alpn ssh --ssh-port %p %h:443
+    ProxyCommand ssh-tls-proxy --tcp-timeout 3 --alpn ssh --ssh-port %p %h:443
 ```
 
 Flags (values shown are defaults): `--ssh-port 22`, `--tls-port 443`,
-`--alpn ssh` (list), `--timeout 3` (float **seconds**, one overall clock
-covering dial + handshake + banner + grace), `--servername` (default: host,
-SNI/verification name), `-k/--insecure`, `-v/--verbose`, `-s/--silent`,
-`-V`/`help`. Env fallbacks `SSHTLSPROXY_SSH_PORT`, `_TLS_PORT`, `_ALPN`,
-`_TIMEOUT`, `_SERVERNAME` fill only flags the operator did not set (an
-explicit flag always wins over env). Exit codes: 0 session done,
-1 client-side failure, 2 usage error, **255 no usable server** (ssh
-convention).
+`--alpn ssh` (list), `--tcp-timeout` and `--tls-timeout` (float **seconds**;
+the connect clock and the handshake clock, default 5 and 45 - the probe is
+capped by the two added together, there is no unlimited mode), `--servername`
+(default: host, SNI/verification name), `-k/--insecure`, `-v/--verbose`,
+`-s/--silent`, `-V`/`help`. Env fallbacks `SSHTLSPROXY_SSH_PORT`, `_TLS_PORT`,
+`_ALPN`, `_TCP_TIMEOUT`, `_TLS_TIMEOUT`, `_SERVERNAME` fill only flags the
+operator did not set (an explicit flag always wins over env). Exit codes: 0
+session done, 1 client-side failure, 2 usage error, **255 no usable server**
+(ssh convention).
 
 ## Selection semantics
 
@@ -81,7 +82,7 @@ standalone.
 Standalone usage for debugging:
 
 ```sh
-printf 'SSH-2.0-debug\r\n' | ssh-tls-proxy -v --timeout 3 host
+printf 'SSH-2.0-debug\r\n' | ssh-tls-proxy -v --tcp-timeout 3 host
 ```
 
 `-v` shows per-candidate dial, ALPN-note, banner, and choice lines.

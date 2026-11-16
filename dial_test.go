@@ -113,11 +113,11 @@ func sniTLS(t *testing.T) (string, *atomic.Value) {
 	return ln.Addr().String(), seen
 }
 
-// One deadline covers connect + handshake: a server that accepts TCP but
-// never handshakes fails at the Timeout instead of hanging.
+// The handshake clock stands on its own: a server that accepts TCP but never
+// handshakes fails on the handshake clock instead of hanging.
 func TestDialTLSStalledHandshake(t *testing.T) {
 	remote := stallTLS(t)
-	tun := &Tunnel{Timeout: 300 * time.Millisecond, InsecureSkipVerify: true}
+	tun := &Tunnel{TLSTimeout: 300 * time.Millisecond, InsecureSkipVerify: true}
 	start := time.Now()
 	_, err := tun.dialTLS(remote, tun.NextProtos)
 	if err == nil {
@@ -136,7 +136,7 @@ func TestDialTLSStalledHandshake(t *testing.T) {
 // checked against.
 func TestDialTLSServerName(t *testing.T) {
 	remote, seen := sniTLS(t)
-	tun := &Tunnel{Timeout: 2 * time.Second, ServerName: "alt.example", InsecureSkipVerify: true}
+	tun := &Tunnel{TLSTimeout: 2 * time.Second, ServerName: "alt.example", InsecureSkipVerify: true}
 	conn, err := tun.dialTLS(remote, tun.NextProtos)
 	if err != nil {
 		t.Fatalf("dialTLS: %v", err)
@@ -162,7 +162,7 @@ func TestTunnelTLSConfigServerName(t *testing.T) {
 // verify the certificate, not fail on an incomplete config.
 func TestDialTLSDefaultsServerName(t *testing.T) {
 	remote := readyTLS(t)
-	tun := &Tunnel{Timeout: 2 * time.Second} // no ServerName, no InsecureSkipVerify
+	tun := &Tunnel{TLSTimeout: 2 * time.Second} // no ServerName, no InsecureSkipVerify
 	_, err := tun.dialTLS(remote, tun.NextProtos)
 	if err == nil {
 		t.Fatal("a self-signed certificate must fail verification")
@@ -175,11 +175,34 @@ func TestDialTLSDefaultsServerName(t *testing.T) {
 	}
 }
 
-// A zero Timeout is not "forever": it takes the default deadline, so every
-// dial has a known limit.
-func TestDialTLSZeroTimeoutIsBounded(t *testing.T) {
+// The clocks resolve to defaults when nothing is named, and the ceiling is the
+// sum of the two - there is no unlimited mode and no separate ceiling.
+func TestTunnelTimeouts(t *testing.T) {
+	cases := []struct {
+		name string
+		tun  Tunnel
+		want [3]time.Duration // connect, handshake, ceiling
+	}{
+		{"nothing named takes the defaults", Tunnel{}, [3]time.Duration{5 * time.Second, 45 * time.Second, 50 * time.Second}},
+		{"a named connect clock moves the ceiling too", Tunnel{TCPTimeout: 2 * time.Second}, [3]time.Duration{2 * time.Second, 45 * time.Second, 47 * time.Second}},
+		{"a named handshake clock moves the ceiling too", Tunnel{TLSTimeout: 2 * time.Second}, [3]time.Duration{5 * time.Second, 2 * time.Second, 7 * time.Second}},
+		{"both clocks named add up", Tunnel{TCPTimeout: 2 * time.Second, TLSTimeout: 3 * time.Second}, [3]time.Duration{2 * time.Second, 3 * time.Second, 5 * time.Second}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			connect, handshake, ceiling := tc.tun.timeouts()
+			if connect != tc.want[0] || handshake != tc.want[1] || ceiling != tc.want[2] {
+				t.Fatalf("timeouts() = %v/%v/%v, want %v/%v/%v", connect, handshake, ceiling, tc.want[0], tc.want[1], tc.want[2])
+			}
+		})
+	}
+}
+
+// Zero clocks are not "forever": every dial has a known limit, and the
+// handshake runs on its own clock inside the ceiling.
+func TestDialTLSUnnamedClocksAreBounded(t *testing.T) {
 	remote := stallTLS(t)
-	tun := &Tunnel{Timeout: 0, InsecureSkipVerify: true}
+	tun := &Tunnel{TCPTimeout: 300 * time.Millisecond, TLSTimeout: 300 * time.Millisecond, InsecureSkipVerify: true}
 	start := time.Now()
 	_, err := tun.dialTLS(remote, tun.NextProtos)
 	elapsed := time.Since(start)
@@ -189,15 +212,15 @@ func TestDialTLSZeroTimeoutIsBounded(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want the deadline", err)
 	}
-	if elapsed < 2*time.Second || elapsed > 6*time.Second {
-		t.Fatalf("took %v, want the 3s default", elapsed)
+	if elapsed < 300*time.Millisecond || elapsed > 2*time.Second {
+		t.Fatalf("took %v, want the 300ms handshake clock", elapsed)
 	}
 }
 
 // The deadline is not per-phase: a handshake inside the budget succeeds.
 func TestDialTLSReady(t *testing.T) {
 	remote := readyTLS(t)
-	tun := &Tunnel{Timeout: 2 * time.Second, InsecureSkipVerify: true}
+	tun := &Tunnel{TLSTimeout: 2 * time.Second, InsecureSkipVerify: true}
 	conn, err := tun.dialTLS(remote, tun.NextProtos)
 	if err != nil {
 		t.Fatalf("dialTLS: %v", err)
@@ -314,7 +337,7 @@ func TestHandleConnectionSniffsSSH(t *testing.T) {
 		t.Cleanup(func() { _ = client.Close(); _ = peer.Close() })
 		go func() { _, _ = peer.Write([]byte(tc.client)) }()
 
-		tun := &Tunnel{Timeout: 2 * time.Second, InsecureSkipVerify: true}
+		tun := &Tunnel{TLSTimeout: 2 * time.Second, InsecureSkipVerify: true}
 		done := make(chan struct{})
 		go func() { tun.handleConnection(remote, client); close(done) }()
 
@@ -338,7 +361,7 @@ func TestHandleConnectionSniffsSSH(t *testing.T) {
 // Verbose says what the dial negotiated; silent mode says nothing.
 func TestReportConnectVerbose(t *testing.T) {
 	remote := readyTLS(t)
-	tun := &Tunnel{Timeout: 2 * time.Second, InsecureSkipVerify: true, Verbose: true}
+	tun := &Tunnel{TLSTimeout: 2 * time.Second, InsecureSkipVerify: true, Verbose: true}
 	conn, err := tun.dialTLS(remote, tun.NextProtos)
 	if err != nil {
 		t.Fatalf("dialTLS: %v", err)

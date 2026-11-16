@@ -88,29 +88,10 @@ func TestPlainALPN(t *testing.T) {
 	}
 }
 
-func TestPlainTimeout(t *testing.T) {
-	cases := []struct {
-		name string
-		raw  float64
-		want float64
-	}{
-		{"the default is the default clock", 0, 3},
-		{"an explicit 0 means the default, not forever", 0, 3},
-		{"a named limit wins", 2.5, 2.5},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := plainTimeout(tc.raw); got != tc.want {
-				t.Fatalf("plainTimeout(%v) = %v, want %v", tc.raw, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestNewSSHConfigDefaults(t *testing.T) {
 	// SSH mode is only ever entered by naming --ssh-port, so the plain port is
 	// never left to the engine's 22 default here.
-	cfg := newSSHConfig("example.com", 443, "", []string{"ssh"}, false, false, true, 22, 0)
+	cfg := newSSHConfig("example.com", 443, "", []string{"ssh"}, false, false, true, 22, timing{})
 	if cfg.Name != "sclient" {
 		t.Errorf("Name = %q, want sclient", cfg.Name)
 	}
@@ -120,8 +101,8 @@ func TestNewSSHConfigDefaults(t *testing.T) {
 	if cfg.Host != "example.com" || cfg.TLSPort != 443 || cfg.SSHPort != 22 {
 		t.Errorf("Host/TLSPort/SSHPort = %s %d %d, want example.com 443 22", cfg.Host, cfg.TLSPort, cfg.SSHPort)
 	}
-	if cfg.Timeout != 0 {
-		t.Errorf("Timeout = %v, want 0 (engine default 3s)", cfg.Timeout)
+	if cfg.TCPTimeout != 0 || cfg.TLSTimeout != 0 {
+		t.Errorf("clocks = %v/%v, want 0/0 (the engine fills in 5s/45s)", cfg.TCPTimeout, cfg.TLSTimeout)
 	}
 	if cfg.TLS == nil {
 		t.Fatal("TLS is nil; the caller config must carry the defaults")
@@ -138,9 +119,9 @@ func TestNewSSHConfigDefaults(t *testing.T) {
 }
 
 func TestNewSSHConfigPorts(t *testing.T) {
-	cfg := newSSHConfig("example.com", 8443, "", []string{"ssh"}, false, false, false, 2222, 2.5)
-	if cfg.TLSPort != 8443 || cfg.SSHPort != 2222 || cfg.Timeout != 2500*time.Millisecond {
-		t.Errorf("TLSPort/SSHPort/Timeout = %d %d %v, want 8443 2222 2.5s", cfg.TLSPort, cfg.SSHPort, cfg.Timeout)
+	cfg := newSSHConfig("example.com", 8443, "", []string{"ssh"}, false, false, false, 2222, timing{connect: 2500 * time.Millisecond})
+	if cfg.TLSPort != 8443 || cfg.SSHPort != 2222 || cfg.TCPTimeout != 2500*time.Millisecond {
+		t.Errorf("TLSPort/SSHPort/TCPTimeout = %d %d %v, want 8443 2222 2.5s", cfg.TLSPort, cfg.SSHPort, cfg.TCPTimeout)
 	}
 }
 
@@ -212,8 +193,7 @@ func freePort(t *testing.T) int {
 // Listener mode, offline: both target ports are refused on loopback, so
 // the client gets EOF and the report lands on the probe's errOut.
 func TestSSHListenerNoServer(t *testing.T) {
-	cfg := newSSHConfig("127.0.0.1", freePort(t), "", []string{"ssh"}, false, false, false, freePort(t), 0)
-	cfg.Timeout = 2 * time.Second
+	cfg := newSSHConfig("127.0.0.1", freePort(t), "", []string{"ssh"}, false, false, false, freePort(t), timing{connect: 2 * time.Second})
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

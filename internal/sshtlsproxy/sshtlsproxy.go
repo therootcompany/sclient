@@ -25,9 +25,9 @@ import (
 var ErrNoServer = errors.New("no usable server")
 
 // Config for one probe. Zero values take the engine defaults: ports 22/443,
-// a 3s clock, ALPN "ssh" (nil = default; explicit empty = offer no ALPN and
-// no gate). Dialer nil means one bounded by the clock with 30s keep-alive;
-// TLS, when non-nil, is used as-is.
+// a 5s connect clock and a 45s handshake clock, ALPN "ssh" (nil = default;
+// explicit empty = offer no ALPN and no gate). Dialer nil means one bounded
+// by the connect clock with 30s keep-alive; TLS, when non-nil, is used as-is.
 type Config struct {
 	Name       string // used in diagnostic lines
 	Host       string
@@ -35,11 +35,13 @@ type Config struct {
 	SSHPort    int
 	TLSPort    int
 	ALPN       []string
-	Timeout    time.Duration
-	Verbose    bool
-	Silent     bool
-	Dialer     *net.Dialer
-	TLS        *tls.Config
+	TCPTimeout time.Duration // one TCP connect, DNS included (default 5s)
+	TLSTimeout time.Duration // one TLS handshake, measured from the connect
+	// (default 45s: a front issuing an ACME certificate is slow)
+	Verbose bool
+	Silent  bool
+	Dialer  *net.Dialer
+	TLS     *tls.Config
 }
 
 // maxBannerLen: RFC 4253 section 4.2 caps the identification string at 255
@@ -174,12 +176,12 @@ func dialCandidateTCP(clock context.Context, cfg Config, port int, dialer *net.D
 	return c
 }
 
-// dialCandidateTLS dials the TLS port and handshakes under the same clock.
-// An ALPN list is a requirement, not a hint: a front that terminates TLS but
-// will not name a protocol we asked for has no ssh route for this name, so
-// that candidate ends at the handshake. `--alpn ""` (empty, non-nil) turns
-// the gate off for fronts that do not speak ALPN at all.
-func dialCandidateTLS(clock context.Context, cfg Config, port int, dialer *net.Dialer, tlsCfg *tls.Config, onTransport func(time.Duration)) *candidate {
+// dialCandidateTLS dials the TLS port: the connect runs on the dial clock, the
+// handshake on its own. An ALPN list is a requirement, not a hint: a front
+// that terminates TLS but will not name a protocol we asked for has no ssh
+// route for this name, so that candidate ends at the handshake. `--alpn ""`
+// (empty, non-nil) turns the gate off for fronts that do not speak ALPN.
+func dialCandidateTLS(ctx, clock context.Context, cfg Config, port int, dialer *net.Dialer, tlsCfg *tls.Config, onTransport func(time.Duration)) *candidate {
 	start := time.Now()
 	c := &candidate{name: "tls", address: net.JoinHostPort(cfg.Host, strconv.Itoa(port))}
 	conn, err := dialer.DialContext(clock, "tcp", c.address)
@@ -190,8 +192,13 @@ func dialCandidateTLS(clock context.Context, cfg Config, port int, dialer *net.D
 	// The socket is up: the grace clock arms here, whether the handshake
 	// below fails or the ALPN gate closes the candidate.
 	onTransport(time.Since(start))
+	// The handshake gets its own clock, off the caller's context: a front
+	// issuing an ACME certificate can take tens of seconds, and the sibling
+	// grace that closes a blackholed port must not strangle it.
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, cfg.TLSTimeout)
+	defer cancelHandshake()
 	tconn := tls.Client(conn, tlsCfg)
-	if err := tconn.HandshakeContext(clock); err != nil {
+	if err := tconn.HandshakeContext(handshakeCtx); err != nil {
 		_ = conn.Close()
 		c.err = dialError(fmt.Errorf("tls %s: %w", conn.RemoteAddr(), err), time.Since(start), clock)
 		return c
@@ -239,6 +246,13 @@ func dialError(err error, elapsed time.Duration, clock context.Context) error {
 	return err
 }
 
+// The engine defaults: a connect that is not quick is dead; a handshake may
+// be slow because the front is issuing a certificate.
+const (
+	defaultTCPTimeout = 5 * time.Second
+	defaultTLSTimeout = 45 * time.Second
+)
+
 // resolved fills in the engine defaults.
 func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 	if cfg.SSHPort == 0 {
@@ -247,8 +261,11 @@ func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 	if cfg.TLSPort == 0 {
 		cfg.TLSPort = 443
 	}
-	if cfg.Timeout <= 0 {
-		cfg.Timeout = 3 * time.Second
+	if cfg.TCPTimeout <= 0 {
+		cfg.TCPTimeout = defaultTCPTimeout
+	}
+	if cfg.TLSTimeout <= 0 {
+		cfg.TLSTimeout = defaultTLSTimeout
 	}
 	if cfg.ALPN == nil {
 		cfg.ALPN = []string{"ssh"}
@@ -259,7 +276,7 @@ func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 	dialer := cfg.Dialer
 	if dialer == nil {
 		dialer = &net.Dialer{
-			Timeout:   cfg.Timeout, // the clock bounds each connect too
+			Timeout:   cfg.TCPTimeout, // the connect clock bounds each connect too
 			KeepAlive: 30 * time.Second,
 		}
 	}
@@ -276,8 +293,8 @@ func (cfg Config) resolved() (Config, *net.Dialer, *tls.Config) {
 
 // Probe returns nil when a session completed through the splice,
 // ErrNoServer when neither candidate is usable, or a client-side error.
-// ctx bounds the probe and the session: Probe caps the probe with
-// cfg.Timeout, but never bounds the session with it.
+// ctx bounds the probe and the session: the connect and handshake clocks cap
+// the probe, but never bound the session.
 func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut io.Writer) error {
 	if errOut == nil {
 		errOut = io.Discard
@@ -289,17 +306,24 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 		}
 	}
 
-	// One clock for the probe: the caller's deadline, capped by cfg.Timeout and
-	// shortened by the grace window. The cancel carries a cause so dialError can
-	// tell "the clock ran out" from "the caller pulled the plug". The caller's
-	// own ctx is kept for the session, which the probe clock must not bound.
-	deadline := time.Now().Add(cfg.Timeout)
+	// The ceiling is whatever the two clocks add up to, or the caller's own
+	// deadline if that is sooner. One clock drives the connects: it fires at
+	// the TCP timeout, and the grace window shortens it. The cancel carries a
+	// cause so dialError can tell "the clock ran out" from "the caller pulled
+	// the plug". The handshake and the banner exchange get their own clocks;
+	// the caller's own ctx is kept for the session, which the probe clock must
+	// not bound.
+	deadline := time.Now().Add(cfg.TCPTimeout + cfg.TLSTimeout)
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
 	}
 	clock, cancelClock := context.WithCancelCause(ctx)
 	defer cancelClock(nil)
-	timer := time.AfterFunc(cfg.Timeout, func() { cancelClock(errProbeClock) })
+	connectWindow := cfg.TCPTimeout
+	if remaining := time.Until(deadline); remaining < connectWindow {
+		connectWindow = remaining
+	}
+	timer := time.AfterFunc(connectWindow, func() { cancelClock(errProbeClock) })
 
 	// Intercepting exactly one client line is safe: the client waits for
 	// the server banner before sending anything else (RFC 4253 4.2).
@@ -317,7 +341,7 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 		res <- dialCandidateTCP(clock, cfg, cfg.SSHPort, dialer, func(el time.Duration) { up <- el })
 	}()
 	go func() {
-		res <- dialCandidateTLS(clock, cfg, cfg.TLSPort, dialer, tlsCfg, func(el time.Duration) { up <- el })
+		res <- dialCandidateTLS(ctx, clock, cfg, cfg.TLSPort, dialer, tlsCfg, func(el time.Duration) { up <- el })
 	}()
 
 	ready := make([]*candidate, 0, 2)
@@ -373,10 +397,10 @@ func Probe(ctx context.Context, cfg Config, in io.Reader, out io.Writer, errOut 
 	// The banner exchange gets its own clock. The dial clock is already spent
 	// when the grace closed a blackholed sibling, and reusing it would cut off
 	// a ready candidate before its banner is even sent. The window is the
-	// smaller of a quarter of the clock (floor 300ms) and what is left of it,
-	// never less than one grace period - otherwise a candidate that connected
-	// late gets no chance to answer at all.
-	bannerWindow := max(2*minGrace, cfg.Timeout/4)
+	// smaller of a quarter of the connect clock (floor 300ms) and what is left
+	// of the ceiling, never less than one grace period - otherwise a candidate
+	// that connected late gets no chance to answer at all.
+	bannerWindow := max(2*minGrace, cfg.TCPTimeout/4)
 	if remaining := time.Until(deadline); remaining < bannerWindow {
 		bannerWindow = max(minGrace, remaining)
 	}

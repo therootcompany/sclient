@@ -87,8 +87,10 @@ sclient [flags] <remote> <local>
     this is the switch that turns on the dual-port SSH probe (see
     [SSH mode](#sclient-ssh-mode---ssh-port)). Unset: one TLS connection.
   - `--ssh` shorthand for `--ssh-port 22`.
-  - `--timeout <seconds>` the deadline for a remote connection to be ready to
-    communicate. Default 3; `0` means "the default", not "unlimited".
+  - `--tcp-timeout <seconds>` the deadline for the TCP connect (DNS included).
+    Default 5; `0` means "the default", not "unlimited".
+  - `--tls-timeout <seconds>` the deadline for the TLS handshake, measured from
+    the connect. Default 45 - a front issuing an ACME certificate is slow.
 - remote
   - must have servername (i.e. example.com)
   - port is optional (default is 443)
@@ -112,14 +114,19 @@ sclient [flags] <remote> <local>
   -ssh-port int
     	plain-SSH port to probe alongside <remote>; turns on the dual-port SSH
     	probe (0 = plain TLS tunnel)
-  -timeout float
-    	seconds until a remote connection is ready to communicate (default 3;
-    	0 = the default, there is no unlimited mode)
+  -tcp-timeout float
+    	seconds for the TCP connect, DNS included (default 5; 0 = the default,
+    	there is no unlimited mode)
+  -tls-timeout float
+    	seconds for the TLS handshake, measured from the connect (default 45;
+    	0 = the default)
   -v	alias for --verbose
   -verbose
     	show what each dial did
-  -timeout float
-    	seconds until the remote is ready to communicate (default 3; 0 = no limit)
+  -tcp-timeout float
+    	seconds for the TCP connect (default 5; 0 = the default)
+  -tls-timeout float
+    	seconds for the TLS handshake (default 45; 0 = the default)
 
 # Examples
 
@@ -202,7 +209,7 @@ splices you onto the winner. You only set `ProxyCommand`:
 
 ```bash
 Host *
-    ProxyCommand ssh-tls-proxy --timeout 3 --alpn ssh --ssh-port %p %h:443
+    ProxyCommand ssh-tls-proxy --alpn ssh --ssh-port %p %h:443
 ```
 
 - If the TLS side answers first (or at all, if both do), it wins.
@@ -248,7 +255,7 @@ Host *
   banner, or the banner it answered with and the host it declared.
 
 Flags: `--ssh-port` (default 22), `--tls-port` (default 443), `--alpn`
-(default `ssh`), `--timeout` seconds (default 3, one overall budget),
+(default `ssh`), `--tcp-timeout` and `--tls-timeout` seconds (5 and 45),
 `--servername`, `-k/--insecure`, `-v/--verbose`, `-s/--silent`.
 The same values can
 come from
@@ -298,13 +305,14 @@ The failure report goes to sclient's stderr — there is no
 `/dev/tty` mirror here, because a standalone tool is not an ssh
 ProxyCommand with its stderr swallowed.
 
-`--timeout` is seconds until a remote connection is ready to
-communicate: the TCP connect and the TLS handshake share one deadline.
-Both modes default to 3 seconds; `--timeout 0` is the default, not "no
-limit" - every dial has a deadline. A connect plus TLS handshake to a
-public host measured 10-130 ms. Once both dials settle, the banner exchange
-runs in its own window: a quarter of the clock (never less than 300 ms), or
-what is left of the clock - never less than one grace period (150 ms). A
+Two clocks bound a dial: `--tcp-timeout` (default 5s) for the connect, and
+`--tls-timeout` (default 45s) for the handshake, measured from the connect - a
+front issuing an ACME certificate can take tens of seconds. There is no
+unlimited mode: every dial has a deadline, and the whole probe is capped by
+the two clocks added together. A connect plus TLS handshake to a public host
+measured 10-130 ms. Once both dials settle, the banner exchange runs in its
+own window: a quarter of the connect clock (never less than 300 ms), or what
+is left of the ceiling - never less than one grace period (150 ms). A
 blackholed port can therefore never starve a ready candidate's banner.
 
 # API

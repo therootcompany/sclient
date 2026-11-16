@@ -106,12 +106,13 @@ func main() {
 }
 
 // rawFlags holds values that need post-processing before they can become
-// a config: the ALPN list, the duration, the server name, the insecure alias.
+// a config: the ALPN list, the clocks, the server name, the insecure alias.
 type rawFlags struct {
-	alpnRaw    string
-	serverName string
-	timeoutSec float64
-	insecure   bool
+	alpnRaw       string
+	serverName    string
+	tcpTimeoutSec float64
+	tlsTimeoutSec float64
+	insecure      bool
 }
 
 func newFlagSet(cfg *sshtlsproxy.Config, raw *rawFlags) *flag.FlagSet {
@@ -120,7 +121,8 @@ func newFlagSet(cfg *sshtlsproxy.Config, raw *rawFlags) *flag.FlagSet {
 	fs.IntVar(&cfg.SSHPort, "ssh-port", 22, "plain-SSH server port (usually %p)")
 	fs.IntVar(&cfg.TLSPort, "tls-port", 443, "TLS-terminated SSH server port")
 	fs.StringVar(&raw.alpnRaw, "alpn", "ssh", "acceptable ALPN protocols, ex: 'ssh' 'h2,http/1.1'")
-	fs.Float64Var(&raw.timeoutSec, "timeout", 3, "overall timeout in seconds (0 = the default, 3)")
+	fs.Float64Var(&raw.tcpTimeoutSec, "tcp-timeout", 0, "TCP connect timeout in seconds (0 = the default, 5)")
+	fs.Float64Var(&raw.tlsTimeoutSec, "tls-timeout", 0, "TLS handshake timeout in seconds (0 = the default, 45)")
 	fs.StringVar(&raw.serverName, "servername", "", "SNI / hostname to verify (default: <host>)")
 	fs.BoolVar(&raw.insecure, "k", false, "alias for --insecure")
 	fs.BoolVar(&raw.insecure, "insecure", false, "ignore bad TLS/SSL certificates")
@@ -133,14 +135,15 @@ func newFlagSet(cfg *sshtlsproxy.Config, raw *rawFlags) *flag.FlagSet {
 		_, _ = fmt.Fprintf(fs.Output(), "USAGE\n  %s [flags] <host>\n\n", name)
 		_, _ = fmt.Fprintf(fs.Output(), "example ssh_config:\n")
 		_, _ = fmt.Fprintf(fs.Output(), "  Host *\n")
-		_, _ = fmt.Fprintf(fs.Output(), "      ProxyCommand %s --timeout 3 --alpn ssh --ssh-port %%p %%h\n\n", name)
+		_, _ = fmt.Fprintf(fs.Output(), "      ProxyCommand %s --tcp-timeout 3 --alpn ssh --ssh-port %%p %%h\n\n", name)
 		_, _ = fmt.Fprintln(fs.Output(), "FLAGS")
 		fs.PrintDefaults()
 		_, _ = fmt.Fprintln(fs.Output(), "\nENVIRONMENT")
 		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_SSH_PORT     plain-SSH server port")
 		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_TLS_PORT     TLS-terminated SSH server port")
 		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_ALPN         acceptable ALPN protocols")
-		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_TIMEOUT      overall timeout in seconds")
+		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_TCP_TIMEOUT   TCP connect timeout in seconds")
+		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_TLS_TIMEOUT   TLS handshake timeout in seconds")
 		_, _ = fmt.Fprintln(fs.Output(), "  SSHTLSPROXY_SERVERNAME   SNI / hostname to verify")
 	}
 
@@ -186,10 +189,17 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 			raw.alpnRaw = v
 		}
 	}
-	if !set["timeout"] {
-		if v := os.Getenv("SSHTLSPROXY_TIMEOUT"); v != "" {
+	if !set["tcp-timeout"] {
+		if v := os.Getenv("SSHTLSPROXY_TCP_TIMEOUT"); v != "" {
 			if tsec, err := strconv.ParseFloat(v, 64); err == nil && tsec >= 0 {
-				raw.timeoutSec = tsec
+				raw.tcpTimeoutSec = tsec
+			}
+		}
+	}
+	if !set["tls-timeout"] {
+		if v := os.Getenv("SSHTLSPROXY_TLS_TIMEOUT"); v != "" {
+			if tsec, err := strconv.ParseFloat(v, 64); err == nil && tsec >= 0 {
+				raw.tlsTimeoutSec = tsec
 			}
 		}
 	}
@@ -203,7 +213,8 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 	if set["alpn"] && cfg.ALPN == nil {
 		cfg.ALPN = []string{}
 	}
-	cfg.Timeout = time.Duration(raw.timeoutSec * float64(time.Second))
+	cfg.TCPTimeout = time.Duration(raw.tcpTimeoutSec * float64(time.Second))
+	cfg.TLSTimeout = time.Duration(raw.tlsTimeoutSec * float64(time.Second))
 
 	// %h never carries a port, but if it does, treat it as the TLS port
 	host := fs.Arg(0)
@@ -217,8 +228,8 @@ func parseArgs(args []string) (sshtlsproxy.Config, *tls.Config, bool) {
 	}
 	cfg.Host = host
 
-	if cfg.Timeout < 0 {
-		fmt.Fprintf(os.Stderr, "%s: --timeout must be 0 (the default, 3s) or a positive number of seconds\n", name)
+	if cfg.TCPTimeout < 0 || cfg.TLSTimeout < 0 {
+		fmt.Fprintf(os.Stderr, "%s: --tcp-timeout and --tls-timeout must be 0 (the default) or a positive number of seconds\n", name)
 		return sshtlsproxy.Config{}, nil, false
 	}
 	if cfg.SSHPort <= 0 || cfg.TLSPort <= 0 {

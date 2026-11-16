@@ -131,7 +131,6 @@ func baseConfig(t *testing.T, host string, sshPort, tlsPort int) Config {
 		SSHPort: sshPort,
 		TLSPort: tlsPort,
 		ALPN:    alpn,
-		Timeout: 3 * time.Second,
 		TLS:     &tls.Config{InsecureSkipVerify: true, NextProtos: alpn},
 	}
 }
@@ -319,9 +318,13 @@ func TestRunPlainWinsWhenTLSBlackholes(t *testing.T) {
 	_, sshPort := hostPort(t, sshAddr)
 
 	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
+	// Name the handshake clock: the stalled front is about the plain
+	// candidate getting its banner, not about waiting out the 45s default.
+	cfg.TCPTimeout = time.Second
+	cfg.TLSTimeout = 500 * time.Millisecond
 	start := time.Now()
 	err, lines := runClient(t, cfg, io.Discard)
-	t.Logf("probe ran %v against a 3s clock", time.Since(start).Round(10*time.Millisecond))
+	t.Logf("probe ran %v against a 1s connect / 500ms handshake clock", time.Since(start).Round(10*time.Millisecond))
 	if err != nil {
 		t.Fatalf("err = %v; lines: %q", err, lines)
 	}
@@ -339,6 +342,8 @@ func TestRunBlackholedTLSHostMismatch(t *testing.T) {
 	_, sshPort := hostPort(t, sshAddr)
 
 	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
+	cfg.TCPTimeout = time.Second
+	cfg.TLSTimeout = 500 * time.Millisecond // the stalled handshake, not the 45s default
 	cfg.ServerName = "guest.example.com"
 	var diag strings.Builder
 	err, _ := runClient(t, cfg, &diag)
@@ -358,7 +363,7 @@ func TestRunBannerWindowFloorOnShortTimeout(t *testing.T) {
 	_, sshPort := hostPort(t, sshAddr)
 
 	cfg := baseConfig(t, "127.0.0.1", sshPort, 1) // tls side refused
-	cfg.Timeout = 200 * time.Millisecond
+	cfg.TCPTimeout = 200 * time.Millisecond
 	var diag strings.Builder
 	err, _ := runClient(t, cfg, &diag)
 	if !errors.Is(err, ErrNoServer) {
@@ -369,6 +374,83 @@ func TestRunBannerWindowFloorOnShortTimeout(t *testing.T) {
 	}
 	if !strings.Contains(diag.String(), "read banner") {
 		t.Errorf("expected a banner read error, got: %s", diag.String())
+	}
+}
+
+// startSlowBannerServer accepts the socket, waits, then handshakes TLS and
+// serves the banner - the stand-in for a front issuing an ACME certificate.
+func startSlowBannerServer(t *testing.T, banner, alpn string, cert *tls.Certificate, delay time.Duration) string {
+	t.Helper()
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			conn, err := inner.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				time.Sleep(delay)
+				tlsCfg := &tls.Config{Certificates: []tls.Certificate{*cert}}
+				if alpn != "" {
+					tlsCfg.NextProtos = []string{alpn}
+				}
+				tc := tls.Server(c, tlsCfg)
+				defer tc.Close()
+				if err := tc.Handshake(); err != nil {
+					return
+				}
+				r := bufio.NewReader(tc)
+				if _, err := readBanner(r); err != nil {
+					return
+				}
+				_, _ = io.WriteString(tc, banner+"\r\n")
+				for {
+					line, err := r.ReadString('\n')
+					if err != nil {
+						return
+					}
+					line = strings.TrimRight(line, "\r\n")
+					if line == "BYE" {
+						_, _ = io.WriteString(tc, "GOODBYE\r\n")
+						return
+					}
+					_, _ = io.WriteString(tc, line+"\r\n")
+				}
+			}(conn)
+		}
+	}()
+	t.Cleanup(func() { _ = inner.Close() })
+	return inner.Addr().String()
+}
+
+// TestRunSlowTLSFrontWins: the plain port is up, so the grace closes pending
+// connects at 150ms. The handshake has its own clock, so a 400ms TLS handshake
+// - a front issuing a certificate - still wins.
+func TestRunSlowTLSFrontWins(t *testing.T) {
+	if !loopbackTLSOK {
+		t.Skip("loopback TLS broken in this environment (see probeLoopbackTLS)")
+	}
+	cert := testCert(t)
+	tlsAddr := startSlowBannerServer(t, "SSH-2.0-slow-tls", "ssh", &cert, 400*time.Millisecond)
+	sshAddr := startBannerServer(t, "SSH-2.0-plain-server", "", "", nil)
+	_, tlsPort := hostPort(t, tlsAddr)
+	_, sshPort := hostPort(t, sshAddr)
+
+	cfg := baseConfig(t, "127.0.0.1", sshPort, tlsPort)
+	cfg.TCPTimeout = time.Second
+	cfg.TLSTimeout = 2 * time.Second
+	start := time.Now()
+	err, lines := runClient(t, cfg, io.Discard)
+	t.Logf("probe ran %v; grace would have closed the handshake at 150ms", time.Since(start).Round(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("err = %v; lines: %q", err, lines)
+	}
+	if len(lines) < 1 || lines[0] != "SSH-2.0-slow-tls" {
+		t.Errorf("banners = %q, want the slow TLS server's", lines)
 	}
 }
 
@@ -430,7 +512,7 @@ func TestProbeHonorsCallerDeadline(t *testing.T) {
 	go func() { _, _ = inWriter.Write([]byte("SSH-2.0-test-client\r\n")) }()
 
 	cfg := baseConfig(t, host, port, port)
-	cfg.Timeout = 10 * time.Second
+	cfg.TCPTimeout = 10 * time.Second
 
 	start := time.Now()
 	if err := Probe(ctx, cfg, in, io.Discard, io.Discard); !errors.Is(err, ErrNoServer) {
@@ -484,4 +566,5 @@ func TestSpliceEndsOnCancel(t *testing.T) {
 // Not automated on purpose: the blackholed-port fast-fail needs a dial that
 // never completes, and loopback cannot produce one (closed local ports RST
 // immediately, so no transport-up event fires). Verified in the field: a
-// dead host with an ALPN-less TLS front fails in ~200ms, not --timeout.
+// dead host with an ALPN-less TLS front fails in ~200ms, not on the connect
+// clock.

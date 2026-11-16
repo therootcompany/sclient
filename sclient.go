@@ -25,14 +25,34 @@ type Tunnel struct {
 	ServerName         string
 	Silent             bool
 	Verbose            bool
-	// Timeout bounds one remote connection: TCP connect plus TLS handshake
-	// under a single deadline. Zero takes the default; every dial has a
-	// deadline, there is no unlimited mode.
-	Timeout time.Duration
+	// TCPTimeout bounds one TCP connect, DNS included. Zero takes the default.
+	TCPTimeout time.Duration
+	// TLSTimeout bounds one TLS handshake, measured from the moment the socket
+	// connects. A front issuing an ACME certificate on first use can take tens
+	// of seconds, so the default is generous.
+	TLSTimeout time.Duration
 }
 
-// defaultConnectTimeout is the deadline when the caller does not name one.
-const defaultConnectTimeout = 3 * time.Second
+// The engine defaults: a connect that is not quick is dead; a handshake may
+// be slow because the front is issuing a certificate.
+const (
+	defaultTCPTimeout = 5 * time.Second
+	defaultTLSTimeout = 45 * time.Second
+)
+
+// timeouts resolves the operator's clocks. The ceiling is the two clocks
+// added together, so every dial has a deadline and there is no unlimited mode.
+func (t *Tunnel) timeouts() (connect, handshake, ceiling time.Duration) {
+	connect = t.TCPTimeout
+	if connect <= 0 {
+		connect = defaultTCPTimeout
+	}
+	handshake = t.TLSTimeout
+	if handshake <= 0 {
+		handshake = defaultTLSTimeout
+	}
+	return connect, handshake, connect + handshake
+}
 
 // sshPrefix is the opening of the RFC 4253 section 4.2 identification
 // string - OpenSSH sends "SSH-2.0-OpenSSH_9.6\r\n" as its very first bytes.
@@ -85,27 +105,27 @@ func (t *Tunnel) tlsConfig(host string, alpn []string) *tls.Config {
 	}
 }
 
-// dialTLS connects and handshakes under one Deadline; a zero Timeout takes
-// the default. The returned connection is ready to communicate.
+// dialTLS connects under the connect clock and handshakes under the handshake
+// clock, all inside the ceiling. The returned connection is ready to
+// communicate.
 func (t *Tunnel) dialTLS(remote string, alpn []string) (*tls.Conn, error) {
 	host, _, err := net.SplitHostPort(remote)
 	if err != nil {
 		return nil, fmt.Errorf("remote %q: %w", remote, err)
 	}
 	cfg := t.tlsConfig(host, alpn)
-	timeout := t.Timeout
-	if timeout <= 0 {
-		timeout = defaultConnectTimeout
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	connect, handshake, ceiling := t.timeouts()
+	ctx, cancel := context.WithTimeout(context.Background(), ceiling)
 	defer cancel()
-	d := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	d := &net.Dialer{Timeout: connect, KeepAlive: 30 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", remote)
 	if err != nil {
 		return nil, err
 	}
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, handshake)
+	defer cancelHandshake()
 	tc := tls.Client(conn, cfg)
-	if err := tc.HandshakeContext(ctx); err != nil {
+	if err := tc.HandshakeContext(handshakeCtx); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
