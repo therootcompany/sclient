@@ -57,7 +57,7 @@ func printVersion(w io.Writer) {
 			}
 		}
 	}
-	_, _ = fmt.Fprintf(w, "%s v%s (%s) %s\n", name, version, commit[:7], date)
+	_, _ = fmt.Fprintf(w, "%s v%s (%s) %s\n", name, version, shortCommit(commit), date)
 }
 
 func main() {
@@ -211,6 +211,12 @@ func remoteAddr(s string, defaultPort int) (string, int, error) {
 		return "", 0, fmt.Errorf("%q: %q is not a port", s, port)
 	}
 	return host, p, nil
+}
+
+// shortCommit keeps the first 7 characters of the hash; anything shorter
+// prints as-is rather than panicking on the slice.
+func shortCommit(c string) string {
+	return c[:min(len(c), 7)]
 }
 
 // seconds turns a flag value into a duration; a non-positive value leaves the
