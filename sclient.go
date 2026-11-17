@@ -61,6 +61,7 @@ func (t *Tunnel) DialAndListen() error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = ln.Close() }()
 
 	if !t.Silent {
 		_, _ = fmt.Fprintf(os.Stdout, "[listening] %s:%d <= %s:%d\n",
