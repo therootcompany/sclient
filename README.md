@@ -40,6 +40,7 @@ A poor man's (or Windows user's) makeshift replacement for `openssl s_client`,
 - [Usage](#usage)
 - [Examples](#examples)
 - [SSH mode](#ssh-mode)
+- [ssh-tls-proxy](#ssh-tls-proxy)
 - [API](#api)
 - [Build from source](#build-from-source)
 - [Tests](#tests)
@@ -186,6 +187,28 @@ Plain mode sniffs the local side: with no `--alpn`, an `SSH-` banner on the firs
 bytes means the client is ssh, so `ssh` is offered. The peek does not consume the
 banner.
 
+# ssh-tls-proxy
+
+`ssh-tls-proxy` is the SSH-specific command: the same probe, without the TLS-tunnel
+flags. It reads the SSH client on stdin and writes the server back on stdout, which
+is what ssh's `ProxyCommand` expects.
+
+```bash
+ssh -o ProxyCommand='ssh-tls-proxy --ssh-port %p %h:443' example.com
+
+# stunnel-style: SSH clients connect to a local port instead of stdin/stdout
+ssh-tls-proxy --listen localhost:2222 example.com:443
+```
+
+Build it from source:
+
+```bash
+go build -o ./dist/ssh-tls-proxy ./cmd/ssh-tls-proxy/
+```
+
+Exit codes match sclient's: 0 done, 1 failure (including no usable server, after
+naming every candidate and why it lost), 2 usage.
+
 # API
 
 See [Go Docs](https://pkg.go.dev/github.com/therootcompany/sclient).
@@ -223,8 +246,10 @@ go run github.com/therootcompany/sclient/cmd/sclient example.com:443 localhost:3
 
 ```bash
 go build -o bin/sclient ./cmd/sclient
+go build -o bin/ssh-tls-proxy ./cmd/ssh-tls-proxy
 
 sh tests/ssh-local-smoke.sh    # SSH mode against loopback banner servers
+sh tests/ssh-tls-proxy.sh      # ssh-tls-proxy against the same servers
 sh tests/ssh-smoke.sh all      # live SSH-mode probes against the fleet
 ./tests/smoke.sh example.com   # live smoke test against a real TLS remote
 ```

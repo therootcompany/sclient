@@ -1,7 +1,8 @@
 // demo serves an SSH-banner echo server over TLS and over plain TCP, for
 // CLI smoke tests of SSH mode. It is not part of the shipped binary.
 //
-//	go run ./agents/tmp/demo -tls 4430 -plain 2200 -tls-host demo.local -plain-host demo.local
+//	go build -o ./agents/tmp/ssh-demo ./tests/demo
+//	./agents/tmp/ssh-demo -tls 4430 -plain 2200 -tls-host demo.local -plain-host demo.local
 package main
 
 import (

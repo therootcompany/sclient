@@ -105,8 +105,14 @@ if [ ! -x "$g_bin" ]; then
 fi
 go build -o "$g_demo" ./tests/demo
 
-# A: both ports answer, TLS negotiates "ssh" - the TLS candidate wins.
-fn_start_demo ssh demo.local demo.local
+if nc -z 127.0.0.1 "$g_tls" >/dev/null 2>&1 || nc -z 127.0.0.1 "$g_plain" >/dev/null 2>&1; then
+	printf 'FAIL: port %s or %s is already in use; stop the leftover demo server\n' "$g_tls" "$g_plain"
+	exit 1
+fi
+
+# A: both ports answer and TLS negotiates "ssh" - the TLS candidate wins. The
+# plain banner declares nothing, so it proves nothing and TLS keeps its chance.
+fn_start_demo ssh demo.local ""
 fn_case A 3000 --ssh-port "$g_plain" --insecure --servername demo.local -v 127.0.0.1:"$g_tls" 127.0.0.1:3000
 fn_check "A chosen tls" "chosen: tls" agents/tmp/smoke-A.log
 

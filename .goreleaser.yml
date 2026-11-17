@@ -1,9 +1,14 @@
+version: 2
+
 before:
   hooks:
     - go mod download
     - go generate ./...
+
 builds:
-  - main: ./cmd/sclient/
+  - id: sclient
+    binary: sclient
+    main: ./cmd/sclient/
     env:
       - CGO_ENABLED=0
     goos:
@@ -28,16 +33,49 @@ builds:
         goarm: 6
       - goos: windows
         goarm: 7
+
+  - id: ssh-tls-proxy
+    binary: ssh-tls-proxy
+    main: ./cmd/ssh-tls-proxy/
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - freebsd
+      - windows
+    goarch:
+      - amd64
+      - arm
+      - arm64
+    goarm:
+      - 7
+    goamd64:
+      - v2
+    ignore:
+      - goos: windows
+        goarch: 386
+      - goos: windows
+        goarm: 6
+      - goos: windows
+        goarm: 7
+
 archives:
   - id: sclient-binary
-    format: tar.xz
+    formats: [tar.xz]
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
+
+  - id: ssh-tls-proxy-binary
+    formats: [tar.xz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
 checksum:
   name_template: 'checksums.txt'
-snapshot:
-  name_template: "{{ .Tag }}-next"
+
 changelog:
   sort: asc
   filters:
