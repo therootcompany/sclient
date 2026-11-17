@@ -113,7 +113,7 @@ func pipe(src io.ReadCloser, dst io.Writer, name string) {
 }
 
 func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
-	sclient, err := tls.Dial("tcp", remote,
+	remoteConn, err := tls.Dial("tcp", remote,
 		&tls.Config{
 			ServerName:         t.ServerName,
 			NextProtos:         t.NextProtos,
@@ -136,6 +136,6 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 		}
 	}
 
-	go pipe(conn, sclient, "local")
-	pipe(sclient, conn, "remote")
+	go pipe(conn, remoteConn, "local")
+	pipe(remoteConn, conn, "remote")
 }

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	sclient "github.com/therootcompany/sclient"
+	"github.com/therootcompany/sclient"
 )
 
 var (
@@ -78,7 +78,7 @@ func main() {
 		}
 	}
 
-	sclient := &sclient.Tunnel{
+	tun := &sclient.Tunnel{
 		RemotePort:         443,
 		LocalAddress:       "localhost",
 		InsecureSkipVerify: insecure,
@@ -95,17 +95,17 @@ func main() {
 			usage()
 			os.Exit(0)
 		}
-		sclient.RemotePort = rport
+		tun.RemotePort = rport
 	} else if len(remote) != 1 {
 		usage()
 		os.Exit(0)
 	}
-	sclient.RemoteAddress = remote[0]
+	tun.RemoteAddress = remote[0]
 
 	if localstr == "-" || localstr == "|" {
 		// User may specify stdin/stdout instead of net
-		sclient.LocalAddress = localstr
-		sclient.LocalPort = -1
+		tun.LocalAddress = localstr
+		tun.LocalPort = -1
 	} else {
 		// Test that argument is a local address
 		local := strings.Split(localstr, ":")
@@ -116,19 +116,19 @@ func main() {
 				usage()
 				os.Exit(0)
 			}
-			sclient.LocalPort = lport
+			tun.LocalPort = lport
 		} else {
 			lport, err := strconv.Atoi(local[1])
 			if err != nil {
 				usage()
 				os.Exit(0)
 			}
-			sclient.LocalAddress = local[0]
-			sclient.LocalPort = lport
+			tun.LocalAddress = local[0]
+			tun.LocalPort = lport
 		}
 	}
 
-	err := sclient.DialAndListen()
+	err := tun.DialAndListen()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		//usage()
