@@ -191,6 +191,10 @@ func (rw *stdnet) Read(buf []byte) (n int, err error) {
 func (rw *stdnet) Write(buf []byte) (n int, err error) {
 	return rw.out.Write(buf)
 }
+
+// Close ends the input side only: closing stdin gives the local client its
+// EOF, which is the session-ending signal. stdout stays open so the remote
+// side can still flush its last bytes.
 func (rw *stdnet) Close() error {
 	return rw.in.Close()
 }
