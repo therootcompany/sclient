@@ -86,6 +86,8 @@ sclient [flags] <remote> <local>
 - local
   - address is optional (default is localhost)
   - must have port (i.e. 3000)
+  - `-` means stdin/stdout instead of a local listener (omitting &lt;local&gt;
+    entirely does the same thing when stdin is piped)
 
   -alpn string
     	acceptable protocols, ex: 'h2,http/1.1' 'ssh' (unset: no ALPN is offered)

@@ -132,7 +132,7 @@ func main() {
 	if n != 2 {
 		// We may omit the second argument if we're going straight to stdin
 		if stat, _ := os.Stdin.Stat(); n == 1 && (stat.Mode()&os.ModeCharDevice) == 0 {
-			localstr = "|"
+			localstr = sclient.Stdio
 		} else {
 			fs.Usage()
 			os.Exit(2)
@@ -159,7 +159,7 @@ func main() {
 	}
 	tun.RemoteAddress, tun.RemotePort = remoteHost, remotePort
 
-	if localstr == "-" || localstr == "|" {
+	if sclient.IsStdio(localstr) {
 		// stdin/stdout instead of a local listener
 		tun.LocalAddress = localstr
 		tun.LocalPort = -1

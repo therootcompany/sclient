@@ -31,6 +31,23 @@ type Tunnel struct {
 	TLSTimeout time.Duration
 }
 
+// Stdio is the LocalAddress sentinel that means "no local listener": read
+// stdin, write stdout.
+const Stdio = "-"
+
+// pipeStdio is the undocumented sentinel the 2018 pipe support invented for
+// "stdin is not a terminal". It is an alias for Stdio; prefer Stdio.
+const pipeStdio = "|"
+
+// stdioNetwork labels the pseudo-connection so the connect line can tell a
+// stdio session from a real local client.
+const stdioNetwork = "stdio"
+
+// IsStdio reports whether the local side is stdin/stdout rather than a listener.
+func IsStdio(addr string) bool {
+	return addr == Stdio || addr == pipeStdio
+}
+
 // The engine clocks: a connect that is not quick is dead; a handshake gets
 // twice the connect that just happened (measured 0.5-1.4x on public fronts).
 const (
@@ -120,18 +137,15 @@ func (t *Tunnel) DialAndListen() error {
 	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
 
 	// use stdin/stdout: one connection, one dial - no pre-flight probe
-	if t.LocalAddress == "-" || t.LocalAddress == "|" {
-		var name string
-		network := "stdio"
-		if t.LocalAddress == "|" {
+	if IsStdio(t.LocalAddress) {
+		name := "stdin"
+		if t.LocalAddress == pipeStdio {
 			name = "pipe"
-		} else {
-			name = "stdin"
 		}
 		conn := &stdnet{
 			in:   os.Stdin,
 			out:  os.Stdout,
-			addr: &stdaddr{net.UnixAddr{Name: name, Net: network}},
+			addr: &stdaddr{net.UnixAddr{Name: name, Net: stdioNetwork}},
 		}
 		t.handleConnection(remote, conn)
 		return nil
@@ -257,7 +271,7 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 	t.reportConnect(remote, sclient, time.Since(start))
 
 	if !t.Silent {
-		if conn.RemoteAddr().Network() == "stdio" {
+		if conn.RemoteAddr().Network() == stdioNetwork {
 			_, _ = fmt.Fprintf(os.Stdout, "(connected to %s:%d and reading from %s)\n",
 				t.RemoteAddress, t.RemotePort, conn.RemoteAddr().String())
 		} else {
