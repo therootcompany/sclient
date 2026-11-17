@@ -39,7 +39,10 @@ A poor man's (or Windows user's) makeshift replacement for `openssl s_client`,
 - [Install](#install)
 - [Usage](#usage)
 - [Examples](#examples)
-- [Build from Source](#build-from-source)
+- [SSH mode](#ssh-mode)
+- [API](#api)
+- [Build from source](#build-from-source)
+- [Tests](#tests)
 
 # Install
 
@@ -75,6 +78,11 @@ sclient [flags] <remote> <local>
   - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
     not use this option)
   - `--alpn <protocol-list>` acceptable protocols, ex: `h2,http/1.1` `ssh`
+  - `--ssh-port <n>` probe a plain SSH port alongside `<remote>` at once: SSH
+    mode. `<remote>` stays the TLS side.
+  - `--ssh` shorthand for `--ssh-port 22`.
+  - `-v`, `--verbose` show what each dial did (SSH mode: every candidate and the
+    banner it answered with)
   - `--stderr <path>` a file or device, ex `sclient.log`, `/dev/tty`, `/dev/null`
   - `--tcp-timeout <seconds>` seconds for the TCP connect, DNS included
     (0 = default, 5s)
@@ -142,6 +150,42 @@ sclient --servername "Robert'); DROP TABLE Students;" -k example.com localhost:3
 sclient --servername "../../../.hidden/private.txt" -k example.com localhost:3000
 ```
 
+# SSH mode
+
+A name can answer on plain `:22` **and** on TLS-terminated `:443` (ALPN `ssh`),
+sometimes on different servers. Naming `--ssh-port` dials both at once, runs the
+SSH banner exchange (RFC 4253 section 4.2) against whichever answers, prefers the
+TLS connection, and relays you onto the winner. Trying one port and falling back
+to the other is a different, weaker tool: the probe is simultaneous.
+
+```bash
+# as an ssh ProxyCommand: the plain port and the TLS port probed at once
+ssh -o ProxyCommand='sclient --ssh-port %p %h:443' example.com
+
+# stunnel-style: a local listener for SSH clients
+sclient --ssh-port 22 example.com:443 localhost:3000
+```
+
+Write the TLS port out (`%h:443`) rather than leaving it implied: it names the
+side being probed and keeps `%p` unambiguously the plain SSH port.
+
+Two gates tell the two servers apart:
+
+- **ALPN** - a named `--alpn` is a requirement, not a hint. A TLS connection that
+  negotiates none of it has no ssh route for this name: it is closed at the
+  handshake and never sees the banner. `--alpn ''` turns the gate off.
+- **Banner host** - a server can name itself in the banner comment, ex:
+  `SSH-2.0-OpenSSH_9.6 host:example.com`. If it declares hosts and none matches
+  the name you dialled (`--servername`, default the host), the candidate is
+  refused. A banner that declares nothing is accepted.
+
+An IP remote is not probed over TLS in SSH mode - an address carries no name to
+route on. `--servername` names the server and makes the TLS side fair game.
+
+Plain mode sniffs the local side: with no `--alpn`, an `SSH-` banner on the first
+bytes means the client is ssh, so `ssh` is offered. The peek does not consume the
+banner.
+
 # API
 
 See [Go Docs](https://pkg.go.dev/github.com/therootcompany/sclient).
@@ -178,6 +222,12 @@ go run github.com/therootcompany/sclient/cmd/sclient example.com:443 localhost:3
 # Tests
 
 ```bash
-go test ./...                  # unit and integration tests, no network needed
+go build -o bin/sclient ./cmd/sclient
+
+sh tests/ssh-local-smoke.sh    # SSH mode against loopback banner servers
+sh tests/ssh-smoke.sh all      # live SSH-mode probes against the fleet
 ./tests/smoke.sh example.com   # live smoke test against a real TLS remote
 ```
+
+The fleet probes read their host lists from the local deployment notes; the
+script itself names no host.

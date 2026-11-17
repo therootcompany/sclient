@@ -1,17 +1,22 @@
 package sclient
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"strconv"
-	"sync"
 	"time"
+
+	"github.com/therootcompany/sclient/internal/ssh"
+	"github.com/therootcompany/sclient/internal/tunnel"
 )
+
+// ErrNoServer means neither port was usable in SSH mode. Each candidate's
+// failure is already reported to the diagnostics destination.
+var ErrNoServer = ssh.ErrNoServer
 
 // Tunnel specifies which remote encrypted connection to make available as a plain connection locally.
 type Tunnel struct {
@@ -23,61 +28,32 @@ type Tunnel struct {
 	NextProtos         []string
 	ServerName         string
 	Silent             bool
+	Verbose            bool
 	TCPTimeout         time.Duration
 	TLSTimeout         time.Duration
+	// SSHPort turns on SSH mode: the plain SSH port probed alongside
+	// RemoteAddress:RemotePort. Zero is a plain TLS tunnel.
+	SSHPort int
 }
 
-// tlsConfig is the client config for one dial. The name defaults to the remote
-// address. Go sends no SNI for an IP, but still checks it against the cert.
-func (t *Tunnel) tlsConfig() *tls.Config {
-	serverName := t.ServerName
-	if serverName == "" {
-		serverName = t.RemoteAddress
+// serverName is the name the connection is for: ServerName, or the remote
+// address when none is given.
+func (t *Tunnel) serverName() string {
+	if t.ServerName != "" {
+		return t.ServerName
 	}
-	return &tls.Config{
-		ServerName:         serverName,
-		NextProtos:         t.NextProtos,
+	return t.RemoteAddress
+}
+
+// dial is everything one dial needs, with the protocols this attempt offers.
+func (t *Tunnel) dial(protos []string) tunnel.Dial {
+	return tunnel.Dial{
+		ServerName:         t.serverName(),
+		NextProtos:         protos,
 		InsecureSkipVerify: t.InsecureSkipVerify,
+		TCPTimeout:         t.TCPTimeout,
+		TLSTimeout:         t.TLSTimeout,
 	}
-}
-
-const (
-	defaultTCPDeadline   = 5 * time.Second
-	minHandshakeDeadline = 150 * time.Millisecond
-	handshakeMultiplier  = 3
-)
-
-func (t *Tunnel) handshakeDeadline(connect time.Duration) time.Duration {
-	if t.TLSTimeout > 0 {
-		return t.TLSTimeout
-	}
-	return max(handshakeMultiplier*connect, minHandshakeDeadline)
-}
-
-// dial connects, then handshakes, each under its own deadline.
-func (t *Tunnel) dial(ctx context.Context, remote string) (*tls.Conn, error) {
-	connect := t.TCPTimeout
-	if connect <= 0 {
-		connect = defaultTCPDeadline
-	}
-	ctx, cancel := context.WithTimeout(ctx, connect+t.handshakeDeadline(connect))
-	defer cancel()
-
-	start := time.Now()
-	conn, err := (&net.Dialer{Timeout: connect}).DialContext(ctx, "tcp", remote)
-	if err != nil {
-		return nil, err
-	}
-
-	handshake, cancelHandshake := context.WithTimeout(ctx, t.handshakeDeadline(time.Since(start)))
-	defer cancelHandshake()
-
-	remoteConn := tls.Client(conn, t.tlsConfig())
-	if err := remoteConn.HandshakeContext(handshake); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	return remoteConn, nil
 }
 
 // DialAndListen runs the tunnel with a context that is never canceled.
@@ -85,32 +61,28 @@ func (t *Tunnel) DialAndListen() error {
 	return t.DialAndListenContext(context.Background())
 }
 
-// DialAndListenContext connects to the remote address, then listens locally;
-// each local connection gets its own remote connection. It runs until the tunnel
+// DialAndListenContext connects to the remote address, then listens locally; each
+// local connection gets its own remote connection. It runs until the tunnel
 // finishes, fails, or ctx is canceled.
 //
 // Canceling ctx closes the listener, ends every open connection, and returns nil.
 func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
+	if t.SSHPort > 0 {
+		return t.serveSSH(ctx)
+	}
+
 	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
 
 	// use stdin/stdout: one connection, one dial
 	if t.LocalAddress == "-" || t.LocalAddress == "|" {
-		var name string
-		network := "stdio"
-		if t.LocalAddress == "|" {
-			name = "pipe"
-		} else {
-			name = "stdin"
-		}
-		stdioConn := &stdnet{os.Stdin, os.Stdout, &stdaddr{net.UnixAddr{Name: name, Net: network}}}
-		t.handleConnection(ctx, remote, stdioConn)
+		t.handleConnection(ctx, remote, tunnel.StdioConn(t.LocalAddress))
 		return nil
 	}
 
 	// use net.Conn
 	// Probe once before binding, so the operator knows early whether the remote is
 	// alive; each local connection dials on its own.
-	probeConn, err := t.dial(ctx, remote)
+	probeConn, err := t.dial(t.NextProtos).DialTLS(ctx, remote, t.NextProtos, nil)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
@@ -144,93 +116,53 @@ func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 			}
 			return fmt.Errorf("local listener: %w", err)
 		}
-		go t.handleConnection(ctx, remote, conn)
+		go func() { t.handleConnection(ctx, remote, conn) }()
 	}
 }
 
-// I wonder if I can get this to exactly mirror UnixAddr without passing it in
-type stdaddr struct {
-	net.UnixAddr
-}
-
-type stdnet struct {
-	in   *os.File // os.Stdin
-	out  *os.File // os.Stdout
-	addr *stdaddr
-}
-
-func (rw *stdnet) Read(buf []byte) (n int, err error) {
-	return rw.in.Read(buf)
-}
-func (rw *stdnet) Write(buf []byte) (n int, err error) {
-	return rw.out.Write(buf)
-}
-func (rw *stdnet) Close() error {
-	return rw.in.Close()
-}
-func (rw *stdnet) RemoteAddr() net.Addr {
-	return rw.addr
-}
-
-// displayAddr prints loopback as localhost.
-func displayAddr(addr net.Addr) string {
-	host, port, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		return addr.String()
+// serveSSH hands the whole SSH-mode session to the ssh package.
+func (t *Tunnel) serveSSH(ctx context.Context) error {
+	cfg := ssh.Config{
+		Host:       t.RemoteAddress,
+		ServerName: t.ServerName,
+		SSHPort:    t.SSHPort,
+		TLSPort:    t.RemotePort,
+		ALPN:       t.NextProtos,
+		TCPTimeout: t.TCPTimeout,
+		TLSTimeout: t.TLSTimeout,
+		Verbose:    t.Verbose,
+		Silent:     t.Silent,
+		Dial:       t.dial(t.NextProtos),
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		return net.JoinHostPort("localhost", port)
+
+	if t.LocalAddress == "-" || t.LocalAddress == "|" {
+		return ssh.Serve(ctx, cfg, tunnel.StdioConn(t.LocalAddress), os.Stderr)
 	}
-	return addr.String()
+
+	local := net.JoinHostPort(t.LocalAddress, strconv.Itoa(t.LocalPort))
+	return ssh.Listen(ctx, cfg, local, os.Stderr)
 }
 
-// not all of net.Conn, just RWC and RemoteAddr()
-type netReadWriteCloser interface {
-	io.ReadWriteCloser
-	RemoteAddr() net.Addr
-}
-
-// pipe relays local <-> remote in both directions, ending each stream when its
-// source is exhausted, then hangs up on both.
-func pipe(local io.ReadWriteCloser, remote io.ReadWriteCloser) error {
-	var (
-		wg        sync.WaitGroup
-		localErr  error
-		remoteErr error
-	)
-
-	wg.Go(func() { localErr = pipeToRemote(local, remote) })
-	wg.Go(func() { remoteErr = pipeToLocal(remote, local) })
-	wg.Wait()
-
-	_ = remote.Close()
-	return errors.Join(localErr, remoteErr)
-}
-
-// pipeToRemote copies local to remote, then half-closes the remote so a
-// keep-alive server sees EOF without losing its buffered answer.
-func pipeToRemote(local io.Reader, remote io.WriteCloser) error {
-	_, err := io.Copy(remote, local)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-		return err
+// reportConnect says what a dial negotiated, when the operator asked for more than
+// the bare "connected" line.
+func (t *Tunnel) reportConnect(remote string, conn *tls.Conn, elapsed time.Duration) {
+	if !t.Verbose {
+		return
 	}
-	if cw, ok := remote.(interface{ CloseWrite() error }); ok {
-		return cw.CloseWrite()
+	protocol := "(none)"
+	if p := conn.ConnectionState().NegotiatedProtocol; p != "" {
+		protocol = strconv.Quote(p)
 	}
-	return remote.Close()
+	_, _ = fmt.Fprintf(os.Stderr, "[verbose] %s: tls %s, alpn %s, ready in %s\n",
+		remote, conn.RemoteAddr(), protocol, tunnel.ElapsedText(elapsed))
 }
 
-// pipeToLocal copies remote to local, then hangs up on the local side.
-func pipeToLocal(remote io.Reader, local io.WriteCloser) error {
-	_, err := io.Copy(local, remote)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-		return err
-	}
-	return local.Close()
-}
+func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn net.Conn) {
+	local := bufio.NewReaderSize(conn, 32*1024)
+	protos := ssh.SniffALPN(t.NextProtos, local, conn)
 
-func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn netReadWriteCloser) {
-	remoteConn, err := t.dial(ctx, remote)
+	start := time.Now()
+	remoteConn, err := t.dial(protos).DialTLS(ctx, remote, protos, nil)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
@@ -238,22 +170,24 @@ func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn netRe
 		return
 	}
 
+	t.reportConnect(remote, remoteConn, time.Since(start))
+
 	if !t.Silent {
 		if conn.RemoteAddr().Network() == "stdio" {
 			_, _ = fmt.Fprintf(os.Stderr, "(connected to %s and reading from %s)\n",
 				remote, conn.RemoteAddr().String())
 		} else {
 			_, _ = fmt.Fprintf(os.Stderr, "[connect] %s => %s\n",
-				displayAddr(conn.RemoteAddr()), remote)
+				tunnel.DisplayAddr(conn.RemoteAddr()), remote)
 		}
 	}
 
-	// pipe() copies both directions and closes both when either side ends.
-	// Canceling ctx closes both early.
+	// Pipe copies both directions and closes both when either side ends. Canceling
+	// ctx closes both early.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if err := pipe(conn, remoteConn); err != nil {
+		if err := tunnel.Pipe(&tunnel.BufferedConn{R: local, Conn: conn}, remoteConn); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "[copy error] %s\n", err)
 		}
 	}()
