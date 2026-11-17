@@ -58,10 +58,10 @@ curl.exe -A MS https://webinstall.dev/sclient | powershell
 Check the [Github Releases](https://github.com/therootcompany/sclient/releases)
 for
 
-- macOS (x64) Apple Silicon
-  [coming soon](https://github.com/golang/go/issues/39782)
-- Linux (x64, i386, arm64, arm6, arm7)
-- Windows 10 (x64, i386)
+- macOS (x64, Apple Silicon)
+- Linux (x64, arm64, armv7)
+- Windows (x64, arm64)
+- FreeBSD (x64, arm64, armv7)
 
 # Usage
 
@@ -158,7 +158,7 @@ Then you can install and run as per usual.
 git clone https://git.rootprojects.org/root/sclient.go.git
 
 pushd sclient.go
-  go build -o dist/sclient cmd/sclient/main.go
+  go build -o ./dist/sclient ./cmd/sclient/
   sudo rsync -av dist/sclient /usr/local/bin/sclient
 popd
 
