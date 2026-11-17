@@ -23,16 +23,20 @@ type Tunnel struct {
 	Silent             bool
 }
 
+// tlsConfig is the client config for one remote dial.
+func (t *Tunnel) tlsConfig() *tls.Config {
+	return &tls.Config{
+		ServerName:         t.ServerName,
+		NextProtos:         t.NextProtos,
+		InsecureSkipVerify: t.InsecureSkipVerify,
+	}
+}
+
 // DialAndListen will create a test TLS connection to the remote address and then
 // begin listening locally. Each local connection will result in a separate remote connection.
 func (t *Tunnel) DialAndListen() error {
 	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
-	conn, err := tls.Dial("tcp", remote,
-		&tls.Config{
-			ServerName:         t.ServerName,
-			NextProtos:         t.NextProtos,
-			InsecureSkipVerify: t.InsecureSkipVerify,
-		})
+	conn, err := tls.Dial("tcp", remote, t.tlsConfig())
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
@@ -118,12 +122,7 @@ func pipe(dst io.Writer, src io.Reader, name string) {
 }
 
 func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
-	sclient, err := tls.Dial("tcp", remote,
-		&tls.Config{
-			ServerName:         t.ServerName,
-			NextProtos:         t.NextProtos,
-			InsecureSkipVerify: t.InsecureSkipVerify,
-		})
+	sclient, err := tls.Dial("tcp", remote, t.tlsConfig())
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
