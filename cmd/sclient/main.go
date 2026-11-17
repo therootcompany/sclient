@@ -185,21 +185,30 @@ func main() {
 	}
 }
 
+// port parses a port number; anything outside 1..65535 is not a port.
+func port(s string) (int, error) {
+	p, err := strconv.Atoi(s)
+	if err != nil || p < 1 || p > 65535 {
+		return 0, fmt.Errorf("%q is not a port", s)
+	}
+	return p, nil
+}
+
 // localAddr parses the local listen address: a bare number is a port on
 // localhost; host:port (or [ipv6]:port) sets both.
 func localAddr(s string) (string, int, error) {
 	s = strings.TrimSpace(s)
-	host, port, err := net.SplitHostPort(s)
+	host, portStr, err := net.SplitHostPort(s)
 	if err != nil {
-		p, cerr := strconv.Atoi(s)
-		if cerr != nil || p < 1 || p > 65535 {
+		p, err := port(s)
+		if err != nil {
 			return "", 0, fmt.Errorf("%q: expected <port> or <host>:<port>", s)
 		}
 		return defaultLocalHost, p, nil
 	}
-	p, cerr := strconv.Atoi(port)
-	if cerr != nil || p < 1 || p > 65535 {
-		return "", 0, fmt.Errorf("%q: %q is not a port", s, port)
+	p, err := port(portStr)
+	if err != nil {
+		return "", 0, fmt.Errorf("%q: %s", s, err)
 	}
 	return host, p, nil
 }
@@ -211,16 +220,16 @@ func remoteAddr(s string, defaultPort int) (string, int, error) {
 	if s == "" {
 		return "", 0, fmt.Errorf("empty address")
 	}
-	host, port, err := net.SplitHostPort(s)
+	host, portStr, err := net.SplitHostPort(s)
 	if err != nil {
 		if strings.Contains(s, ":") {
 			return "", 0, fmt.Errorf("%q: expected <host> or <host>:<port>", s)
 		}
 		return s, defaultPort, nil
 	}
-	p, err := strconv.Atoi(port)
-	if err != nil || p < 1 || p > 65535 {
-		return "", 0, fmt.Errorf("%q: %q is not a port", s, port)
+	p, err := port(portStr)
+	if err != nil {
+		return "", 0, fmt.Errorf("%q: %s", s, err)
 	}
 	return host, p, nil
 }
