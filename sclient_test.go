@@ -224,6 +224,25 @@ func TestDialAndListenContextStopsOnCancel(t *testing.T) {
 	_ = rebind.Close()
 }
 
+func TestElapsedText(t *testing.T) {
+	cases := []struct {
+		in   time.Duration
+		want string
+	}{
+		{900 * time.Millisecond, "900ms"},
+		{1200 * time.Millisecond, "1.2s"},
+		{40 * time.Millisecond, "40ms"},
+		{400 * time.Microsecond, "0ms"},
+		{600 * time.Microsecond, "1ms"},
+		{0, "0ms"},
+	}
+	for _, c := range cases {
+		if got := elapsedText(c.in); got != c.want {
+			t.Errorf("elapsedText(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestHandshakeClock(t *testing.T) {
 	tun := &Tunnel{}
 	if got := tun.handshakeClock(80 * time.Millisecond); got != 160*time.Millisecond {

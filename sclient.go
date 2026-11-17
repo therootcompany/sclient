@@ -75,6 +75,15 @@ func (t *Tunnel) handshakeClock(connect time.Duration) time.Duration {
 	return max(handshakeMultiplier*connect, minHandshakeClock)
 }
 
+// elapsedText renders how long a dial took: 1.2s or 40ms. Rounding to 10ms -
+// the old behavior - reported a fast connect as "0s", which says nothing.
+func elapsedText(d time.Duration) string {
+	if d >= time.Second {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	return fmt.Sprintf("%dms", d.Round(time.Millisecond)/time.Millisecond)
+}
+
 // reportConnect says what a dial actually negotiated, when the operator asked
 // for more than the bare "connected" line.
 func (t *Tunnel) reportConnect(remote string, conn *tls.Conn, elapsed time.Duration) {
@@ -86,7 +95,7 @@ func (t *Tunnel) reportConnect(remote string, conn *tls.Conn, elapsed time.Durat
 		protocol = strconv.Quote(p)
 	}
 	_, _ = fmt.Fprintf(os.Stderr, "[verbose] %s: tls %s, alpn %s, ready in %s\n",
-		remote, conn.RemoteAddr(), protocol, elapsed.Round(10*time.Millisecond))
+		remote, conn.RemoteAddr(), protocol, elapsedText(elapsed))
 }
 
 // dialTLS connects under the connect clock and handshakes under the handshake
