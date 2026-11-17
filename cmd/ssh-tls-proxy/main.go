@@ -209,22 +209,16 @@ func run(ctx context.Context, cfg MainConfig) error {
 	alpn := alpnList(cfg.alpn)
 
 	proxy := ssh.Config{
-		Host:       cfg.host,
-		ServerName: cfg.servername,
-		SSHPort:    cfg.sshPort,
-		TLSPort:    cfg.tlsPort,
-		ALPN:       alpn,
-		TCPTimeout: seconds(cfg.tcpTimeout),
-		TLSTimeout: seconds(cfg.tlsTimeout),
-		Verbose:    cfg.verbose,
-		Silent:     cfg.silent,
-		Dial: tunnel.Dial{
-			ServerName:         cmp.Or(cfg.servername, cfg.host),
-			NextProtos:         alpn,
-			InsecureSkipVerify: cfg.insecure,
-			TCPTimeout:         seconds(cfg.tcpTimeout),
-			TLSTimeout:         seconds(cfg.tlsTimeout),
-		},
+		Host:               cfg.host,
+		ServerName:         cfg.servername,
+		SSHPort:            cfg.sshPort,
+		TLSPort:            cfg.tlsPort,
+		ALPN:               alpn,
+		TCPTimeout:         seconds(cfg.tcpTimeout),
+		TLSTimeout:         seconds(cfg.tlsTimeout),
+		InsecureSkipVerify: cfg.insecure,
+		Verbose:            cfg.verbose,
+		Silent:             cfg.silent,
 	}
 
 	if cfg.listen == "" {

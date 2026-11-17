@@ -36,16 +36,16 @@ var ErrNoServer = errors.New("no usable server")
 
 // Config is one probe. Zero values take the engine defaults.
 type Config struct {
-	Host       string   // the address both ports are dialled on
-	ServerName string   // the name the connection is for; defaults to Host
-	SSHPort    int      // the plain SSH port
-	TLSPort    int      // the TLS port; zero means 443
-	ALPN       []string // nil takes "ssh"; an explicit empty list turns the gate off
-	TCPTimeout time.Duration
-	TLSTimeout time.Duration
-	Verbose    bool
-	Silent     bool
-	Dial       tunnel.Dial
+	Host               string   // the address both ports are dialled on
+	ServerName         string   // the name the connection is for; defaults to Host
+	SSHPort            int      // the plain SSH port
+	TLSPort            int      // the TLS port; zero means 443
+	ALPN               []string // nil takes "ssh"; an explicit empty list turns the gate off
+	TCPTimeout         time.Duration
+	TLSTimeout         time.Duration
+	InsecureSkipVerify bool
+	Verbose            bool
+	Silent             bool
 }
 
 const (
@@ -77,13 +77,19 @@ func (c Config) resolved() Config {
 	if c.ALPN == nil {
 		c.ALPN = []string{"ssh"}
 	}
-	if c.Dial.ServerName == "" {
-		c.Dial.ServerName = c.ServerName
-	}
-	if c.Dial.NextProtos == nil {
-		c.Dial.NextProtos = c.ALPN
-	}
 	return c
+}
+
+// dial is the plumbing each candidate is connected with. The timeouts are the
+// session's; the protocol list is the gate's.
+func (c Config) dial() tunnel.Dial {
+	return tunnel.Dial{
+		ServerName:         c.ServerName,
+		NextProtos:         c.ALPN,
+		InsecureSkipVerify: c.InsecureSkipVerify,
+		TCPTimeout:         c.TCPTimeout,
+		TLSTimeout:         c.TLSTimeout,
+	}
 }
 
 // candidate is one attempt to reach the server.
@@ -182,8 +188,9 @@ func probe(ctx context.Context, cfg Config, clientBanner string, errOut io.Write
 	// The outer bound on the probe: the connect timeout plus the longest handshake
 	// a candidate can spend, or the caller's own deadline if that is sooner. Each
 	// dial keeps its own deadline; the grace period only shortens this one.
-	connect := cfg.Dial.ConnectTimeout()
-	deadline := time.Now().Add(connect + cfg.Dial.HandshakeDeadline(connect))
+	dial := cfg.dial()
+	connect := dial.ConnectTimeout()
+	deadline := time.Now().Add(connect + dial.HandshakeDeadline(connect))
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
 	}
@@ -311,7 +318,8 @@ func dialPlain(probeCtx context.Context, cfg Config, clientBanner string, onConn
 	start := time.Now()
 	c := &candidate{name: "ssh", address: net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.SSHPort))}
 
-	conn, err := cfg.Dial.DialPlain(probeCtx, c.address, onConnected)
+	dial := cfg.dial()
+	conn, err := dial.DialPlain(probeCtx, c.address, onConnected)
 	if err != nil {
 		c.err = dialError(err, time.Since(start), probeCtx)
 		return c
@@ -328,7 +336,8 @@ func dialTLS(ctx, probeCtx context.Context, cfg Config, clientBanner string, onC
 	start := time.Now()
 	c := &candidate{name: "tls", address: net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.TLSPort))}
 
-	conn, err := cfg.Dial.DialPlain(probeCtx, c.address, onConnected)
+	dial := cfg.dial()
+	conn, err := dial.DialPlain(probeCtx, c.address, onConnected)
 	if err != nil {
 		c.err = dialError(err, time.Since(start), probeCtx)
 		return c
@@ -337,7 +346,7 @@ func dialTLS(ctx, probeCtx context.Context, cfg Config, clientBanner string, onC
 	// The handshake is off the probe deadline: the grace period that closes a
 	// blackholed port must not cut it short, and a server that already has a
 	// certificate answers in a couple of round trips.
-	handshake, cancelHandshake := context.WithTimeout(ctx, cfg.Dial.HandshakeDeadline(time.Since(start)))
+	handshake, cancelHandshake := context.WithTimeout(ctx, dial.HandshakeDeadline(time.Since(start)))
 	defer cancelHandshake()
 	go func() {
 		select {
@@ -347,7 +356,7 @@ func dialTLS(ctx, probeCtx context.Context, cfg Config, clientBanner string, onC
 		}
 	}()
 
-	tlsConn := tls.Client(conn, cfg.Dial.TLSConfig(cfg.ALPN))
+	tlsConn := tls.Client(conn, dial.TLSConfig(cfg.ALPN))
 	if err := tlsConn.HandshakeContext(handshake); err != nil {
 		_ = conn.Close()
 		c.err = dialError(fmt.Errorf("tls: %w", err), time.Since(start), probeCtx)
@@ -374,7 +383,7 @@ func dialTLS(ctx, probeCtx context.Context, cfg Config, clientBanner string, onC
 // exchangeBanner writes the client banner, reads the reply, and applies the host
 // gate. A candidate that comes back with err set is not usable.
 func exchangeBanner(c *candidate, cfg Config, clientBanner string, remaining time.Duration, debugf func(string, ...any)) *candidate {
-	timeout := bannerTimeout(cfg.Dial.ConnectTimeout(), remaining)
+	timeout := bannerTimeout(cfg.dial().ConnectTimeout(), remaining)
 	_ = c.conn.SetReadDeadline(time.Now().Add(timeout - bannerReadMargin))
 	defer c.conn.SetReadDeadline(time.Time{})
 

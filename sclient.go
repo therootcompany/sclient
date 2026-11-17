@@ -123,16 +123,16 @@ func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 // serveSSH hands the whole SSH-mode session to the ssh package.
 func (t *Tunnel) serveSSH(ctx context.Context) error {
 	cfg := ssh.Config{
-		Host:       t.RemoteAddress,
-		ServerName: t.ServerName,
-		SSHPort:    t.SSHPort,
-		TLSPort:    t.RemotePort,
-		ALPN:       t.NextProtos,
-		TCPTimeout: t.TCPTimeout,
-		TLSTimeout: t.TLSTimeout,
-		Verbose:    t.Verbose,
-		Silent:     t.Silent,
-		Dial:       t.dial(t.NextProtos),
+		Host:               t.RemoteAddress,
+		ServerName:         t.ServerName,
+		SSHPort:            t.SSHPort,
+		TLSPort:            t.RemotePort,
+		ALPN:               t.NextProtos,
+		TCPTimeout:         t.TCPTimeout,
+		TLSTimeout:         t.TLSTimeout,
+		InsecureSkipVerify: t.InsecureSkipVerify,
+		Verbose:            t.Verbose,
+		Silent:             t.Silent,
 	}
 
 	if t.LocalAddress == "-" || t.LocalAddress == "|" {

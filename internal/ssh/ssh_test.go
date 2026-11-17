@@ -235,12 +235,12 @@ func sshEcho(t *testing.T, banner, extra, alpn string, overTLS bool) int {
 // loopbackConfig points both probes at localhost with the given ports.
 func loopbackConfig(tlsPort, sshPort int) Config {
 	return Config{
-		Host:       "localhost",
-		SSHPort:    sshPort,
-		TLSPort:    tlsPort,
-		Verbose:    false,
-		TCPTimeout: 50 * time.Millisecond,
-		Dial:       tunnel.Dial{InsecureSkipVerify: true},
+		Host:               "localhost",
+		SSHPort:            sshPort,
+		TLSPort:            tlsPort,
+		Verbose:            false,
+		TCPTimeout:         50 * time.Millisecond,
+		InsecureSkipVerify: true,
 	}
 }
 
