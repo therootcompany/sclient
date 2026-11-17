@@ -118,17 +118,8 @@ func (t *Tunnel) tlsConfig(host string) *tls.Config {
 // begin listening locally. Each local connection will result in a separate remote connection.
 func (t *Tunnel) DialAndListen() error {
 	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
-	start := time.Now()
-	conn, err := t.dialTLS(remote)
 
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
-	} else {
-		t.reportConnect(remote, conn, time.Since(start))
-		_ = conn.Close()
-	}
-
-	// use stdin/stdout
+	// use stdin/stdout: one connection, one dial - no pre-flight probe
 	if t.LocalAddress == "-" || t.LocalAddress == "|" {
 		var name string
 		network := "stdio"
@@ -144,6 +135,17 @@ func (t *Tunnel) DialAndListen() error {
 		}
 		t.handleConnection(remote, conn)
 		return nil
+	}
+
+	// Probe once before binding, so the operator knows early whether the
+	// front is alive; each local connection dials on its own.
+	start := time.Now()
+	probe, err := t.dialTLS(remote)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
+	} else {
+		t.reportConnect(remote, probe, time.Since(start))
+		_ = probe.Close()
 	}
 
 	// use net.Conn
