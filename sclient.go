@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -195,6 +194,19 @@ type netReadWriteCloser interface {
 	RemoteAddr() net.Addr
 }
 
+// displayAddr renders a local address for humans: any loopback - [::1] or
+// 127.0.0.1 alike - reads as localhost.
+func displayAddr(addr net.Addr) string {
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return net.JoinHostPort("localhost", port)
+	}
+	return addr.String()
+}
+
 // pipe copies src to dst; io.EOF and a close we initiated end the session,
 // they are not errors.
 func pipe(dst io.Writer, src io.Reader, name string) {
@@ -223,7 +235,7 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 				t.RemoteAddress, t.RemotePort, conn.RemoteAddr().String())
 		} else {
 			_, _ = fmt.Fprintf(os.Stdout, "[connect] %s => %s:%d\n",
-				strings.Replace(conn.RemoteAddr().String(), "[::1]:", "localhost:", 1), t.RemoteAddress, t.RemotePort)
+				displayAddr(conn.RemoteAddr()), t.RemoteAddress, t.RemotePort)
 		}
 	}
 
