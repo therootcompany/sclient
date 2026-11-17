@@ -1,3 +1,3 @@
 #!/bin/bash
 
-cat tests/get.bin | go run -race sclient*.go telebit.cloud:443
+cat tests/get.bin | go run -race ./cmd/sclient telebit.cloud:443
