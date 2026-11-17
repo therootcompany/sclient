@@ -119,13 +119,13 @@ func main() {
 
 	alpns := parseOptionList(cfg.alpn)
 
-	nargs := fs.NArg()
+	n := fs.NArg()
 	remotestr := fs.Arg(0)
 	localstr := fs.Arg(1)
 
-	if nargs != 2 {
+	if n != 2 {
 		// We may omit the second argument if we're going straight to stdin
-		if stat, _ := os.Stdin.Stat(); nargs == 1 && (stat.Mode()&os.ModeCharDevice) == 0 {
+		if stat, _ := os.Stdin.Stat(); n == 1 && (stat.Mode()&os.ModeCharDevice) == 0 {
 			localstr = "|"
 		} else {
 			fs.Usage()
