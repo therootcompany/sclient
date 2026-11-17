@@ -245,6 +245,8 @@ go run github.com/therootcompany/sclient/cmd/sclient example.com:443 localhost:3
 # Tests
 
 ```bash
+go test ./...                  # unit tests: loopback only, under a second
+
 go build -o bin/sclient ./cmd/sclient
 go build -o bin/ssh-tls-proxy ./cmd/ssh-tls-proxy
 
@@ -253,6 +255,11 @@ sh tests/ssh-tls-proxy.sh      # ssh-tls-proxy against the same servers
 sh tests/ssh-smoke.sh all      # live SSH-mode probes against the fleet
 ./tests/smoke.sh example.com   # live smoke test against a real TLS remote
 ```
+
+Each test proves one thing: the gates and the deadlines live in `internal/ssh`, the
+argument handling in `internal/cli`, the copy loops in `internal/tunnel`, and the
+smoke scripts check the wiring a unit test cannot - flags, exit codes, stdio, the
+listener.
 
 The fleet probes read their host lists from the local deployment notes; the
 script itself names no host.
