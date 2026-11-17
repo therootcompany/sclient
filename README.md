@@ -75,6 +75,7 @@ sclient [flags] <remote> <local>
   - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
     not use this option)
   - `--alpn <protocol-list>` acceptable protocols, ex: `h2,http/1.1` `ssh`
+  - `--stderr <path>` a file or device, ex `sclient.log`, `/dev/tty`, `/dev/null`
 - remote
   - must have servername (i.e. example.com)
   - port is optional (default is 443)

@@ -51,6 +51,7 @@ func main() {
 	var insecure bool
 	var servername string
 	var silent bool
+	var stderrPath string
 
 	flag.Usage = usage
 
@@ -60,10 +61,15 @@ func main() {
 	flag.StringVar(&servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
 	flag.BoolVar(&insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
 	flag.BoolVar(&silent, "silent", false, "less verbose output")
+	flag.StringVar(&stderrPath, "stderr", "", "a file or device, ex sclient.log or /dev/null")
 
 	flag.Parse()
 
 	alpns := parseOptionList(alpnList)
+
+	// stdout is the payload; --stderr says where the rest goes.
+	os.Stderr = stderrTarget(stderrPath)
+
 	remotestr := flag.Arg(0)
 	localstr := flag.Arg(1)
 
@@ -128,9 +134,8 @@ func main() {
 		}
 	}
 
-	err := tun.DialAndListen()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", err)
+	if err := tun.DialAndListen(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "%s\n", err)
 		//usage()
 		//os.Exit(6)
 	}
