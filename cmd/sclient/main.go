@@ -51,6 +51,13 @@ func init() {
 	}
 }
 
+// The address defaults live here and nowhere else: the parsers fill them in,
+// so the Tunnel literal never repeats them.
+const (
+	defaultRemotePort = 443
+	defaultLocalHost  = "localhost"
+)
+
 // MainConfig is everything the CLI accepts, one field per flag.
 type MainConfig struct {
 	alpn       string
@@ -141,8 +148,6 @@ func main() {
 	}
 
 	tun := &sclient.Tunnel{
-		RemotePort:         443,
-		LocalAddress:       "localhost",
 		InsecureSkipVerify: cfg.insecure,
 		ServerName:         cfg.servername,
 		Silent:             cfg.silent,
@@ -152,7 +157,7 @@ func main() {
 		TLSTimeout:         seconds(cfg.tlsTimeout),
 	}
 
-	remoteHost, remotePort, err := remoteAddr(remotestr, 443)
+	remoteHost, remotePort, err := remoteAddr(remotestr, defaultRemotePort)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "%s: %s\n", name, err)
 		fs.Usage()
@@ -190,7 +195,7 @@ func localAddr(s string) (string, int, error) {
 		if cerr != nil || p < 1 || p > 65535 {
 			return "", 0, fmt.Errorf("%q: expected <port> or <host>:<port>", s)
 		}
-		return "localhost", p, nil
+		return defaultLocalHost, p, nil
 	}
 	p, cerr := strconv.Atoi(port)
 	if cerr != nil || p < 1 || p > 65535 {
