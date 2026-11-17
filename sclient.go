@@ -67,7 +67,7 @@ func (t *Tunnel) DialAndListen() error {
 
 	for {
 		conn, err := ln.Accept()
-		if nil != err {
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
 			continue
 		}
@@ -112,9 +112,9 @@ func pipe(r netReadWriteCloser, w netReadWriteCloser, t string) {
 		// NOTE: count may be > 0 even if there's an err
 		//fmt.Fprintf(os.Stdout, "[debug] (%s) reading\n", t)
 		count, err := r.Read(buffer)
-		if nil != err {
+		if err != nil {
 			//fmt.Fprintf(os.Stdout, "[debug] (%s:%d) error reading %s\n", t, count, err)
-			if io.EOF != err {
+			if err != io.EOF {
 				fmt.Fprintf(os.Stderr, "[read error] (%s:%d) %s\n", t, count, err)
 			}
 			_ = r.Close()
@@ -125,9 +125,9 @@ func pipe(r netReadWriteCloser, w netReadWriteCloser, t string) {
 			break
 		}
 		_, err = w.Write(buffer[:count])
-		if nil != err {
+		if err != nil {
 			//fmt.Fprintf(os.Stdout, "[debug] %s error writing\n", t)
-			if io.EOF != err {
+			if err != io.EOF {
 				fmt.Fprintf(os.Stderr, "[write error] (%s) %s\n", t, err)
 			}
 			// TODO handle error closing?

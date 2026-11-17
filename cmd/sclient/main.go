@@ -91,7 +91,7 @@ func main() {
 	//remoteAddr, remotePort, err := net.SplitHostPort(remotestr)
 	if len(remote) == 2 {
 		rport, err := strconv.Atoi(remote[1])
-		if nil != err {
+		if err != nil {
 			usage()
 			os.Exit(0)
 		}
@@ -112,14 +112,14 @@ func main() {
 
 		if len(local) == 1 {
 			lport, err := strconv.Atoi(local[0])
-			if nil != err {
+			if err != nil {
 				usage()
 				os.Exit(0)
 			}
 			sclient.LocalPort = lport
 		} else {
 			lport, err := strconv.Atoi(local[1])
-			if nil != err {
+			if err != nil {
 				usage()
 				os.Exit(0)
 			}
@@ -129,7 +129,7 @@ func main() {
 	}
 
 	err := sclient.DialAndListen()
-	if nil != err {
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		//usage()
 		//os.Exit(6)
