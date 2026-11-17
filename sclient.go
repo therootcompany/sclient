@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -90,7 +89,7 @@ func (t *Tunnel) DialAndListen() error {
 //
 // Canceling ctx closes the listener, ends every open connection, and returns nil.
 func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
-	remote := t.RemoteAddress + ":" + strconv.Itoa(t.RemotePort)
+	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
 
 	// use stdin/stdout: one connection, one dial
 	if t.LocalAddress == "-" || t.LocalAddress == "|" {
@@ -117,7 +116,7 @@ func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 		_ = probeConn.Close()
 	}
 
-	local := t.LocalAddress + ":" + strconv.Itoa(t.LocalPort)
+	local := net.JoinHostPort(t.LocalAddress, strconv.Itoa(t.LocalPort))
 	ln, err := net.Listen("tcp", local)
 	if err != nil {
 		return err
@@ -125,8 +124,7 @@ func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 	defer func() { _ = ln.Close() }()
 
 	if !t.Silent {
-		_, _ = fmt.Fprintf(os.Stderr, "[listening] %s:%d <= %s:%d\n",
-			t.RemoteAddress, t.RemotePort, t.LocalAddress, t.LocalPort)
+		_, _ = fmt.Fprintf(os.Stderr, "[listening] %s <= %s\n", remote, local)
 	}
 
 	// Canceling ctx closes the listener, so Accept returns. Connections already
@@ -170,6 +168,18 @@ func (rw *stdnet) Close() error {
 }
 func (rw *stdnet) RemoteAddr() net.Addr {
 	return rw.addr
+}
+
+// displayAddr prints loopback as localhost.
+func displayAddr(addr net.Addr) string {
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return net.JoinHostPort("localhost", port)
+	}
+	return addr.String()
 }
 
 // not all of net.Conn, just RWC and RemoteAddr()
@@ -228,11 +238,11 @@ func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn netRe
 
 	if !t.Silent {
 		if conn.RemoteAddr().Network() == "stdio" {
-			_, _ = fmt.Fprintf(os.Stderr, "(connected to %s:%d and reading from %s)\n",
-				t.RemoteAddress, t.RemotePort, conn.RemoteAddr().String())
+			_, _ = fmt.Fprintf(os.Stderr, "(connected to %s and reading from %s)\n",
+				remote, conn.RemoteAddr().String())
 		} else {
-			_, _ = fmt.Fprintf(os.Stderr, "[connect] %s => %s:%d\n",
-				strings.Replace(conn.RemoteAddr().String(), "[::1]:", "localhost:", 1), t.RemoteAddress, t.RemotePort)
+			_, _ = fmt.Fprintf(os.Stderr, "[connect] %s => %s\n",
+				displayAddr(conn.RemoteAddr()), remote)
 		}
 	}
 

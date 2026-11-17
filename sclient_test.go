@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -482,6 +483,84 @@ func TestDialHonorsTLSDeadline(t *testing.T) {
 		if elapsed > time.Second {
 			t.Errorf("dial: took %s, want well under the %s connect default", elapsed, defaultTCPDeadline)
 		}
+	}
+}
+
+// displayAddr prints loopback as localhost.
+func TestDisplayAddr(t *testing.T) {
+	cases := []struct {
+		addr net.Addr
+		want string
+	}{
+		{&net.TCPAddr{IP: net.IPv6loopback, Port: 3000}, "localhost:3000"},
+		{&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 3000}, "localhost:3000"},
+		{&net.TCPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 3000}, "192.0.2.1:3000"},
+	}
+	for _, c := range cases {
+		if got := displayAddr(c.addr); got != c.want {
+			t.Errorf("displayAddr(%s): got %q, want %q", c.addr, got, c.want)
+		}
+	}
+}
+
+// "::1:3000" is not an address; the tunnel has to bracket it.
+func TestIPv6LocalAddress(t *testing.T) {
+	host, port, shutdown, _ := remoteOf(t)
+	defer shutdown()
+
+	probe, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback on this host: %v", err)
+	}
+	localPort := probe.Addr().(*net.TCPAddr).Port
+	_ = probe.Close()
+	local := net.JoinHostPort("::1", strconv.Itoa(localPort))
+
+	diagRead, diagWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("ipv6: stderr: pipe: %v", err)
+	}
+	oldErr := os.Stderr
+	os.Stderr = diagWrite
+	defer func() { os.Stderr = oldErr }()
+
+	tun := &Tunnel{
+		RemoteAddress:      host,
+		RemotePort:         port,
+		LocalAddress:       "::1",
+		LocalPort:          localPort,
+		InsecureSkipVerify: true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- tun.DialAndListenContext(ctx) }()
+
+	var conn net.Conn
+	for attempt := 0; attempt < bindTries && conn == nil; attempt++ {
+		conn, err = net.Dial("tcp", local)
+		if err != nil {
+			time.Sleep(bindWait)
+		}
+	}
+	if conn == nil {
+		t.Fatalf("ipv6: nothing bound %s", local)
+	}
+	defer conn.Close()
+
+	if err := <-done; err != nil {
+		t.Errorf("ipv6: the listener did not stop on cancel: %v", err)
+	}
+	_ = diagWrite.Close()
+
+	line, err := io.ReadAll(diagRead)
+	if err != nil {
+		t.Fatalf("ipv6: stderr: read: %v", err)
+	}
+	want := fmt.Sprintf("[listening] %s <= %s", net.JoinHostPort(host, strconv.Itoa(port)), local)
+	if !strings.Contains(string(line), want) {
+		t.Errorf("ipv6: the listening line is %q, want %q", string(line), want)
 	}
 }
 

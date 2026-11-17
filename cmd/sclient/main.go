@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -12,6 +14,11 @@ import (
 	"time"
 
 	"github.com/therootcompany/sclient"
+)
+
+const (
+	defaultRemotePort = 443
+	defaultLocalHost  = "localhost"
 )
 
 var (
@@ -93,8 +100,6 @@ func main() {
 	}
 
 	tun := &sclient.Tunnel{
-		RemotePort:         443,
-		LocalAddress:       "localhost",
 		InsecureSkipVerify: insecure,
 		ServerName:         servername,
 		Silent:             silent,
@@ -103,45 +108,26 @@ func main() {
 		TLSTimeout:         toSeconds(tlsTimeout),
 	}
 
-	remote := strings.Split(remotestr, ":")
-	//remoteAddr, remotePort, err := net.SplitHostPort(remotestr)
-	if len(remote) == 2 {
-		rport, err := strconv.Atoi(remote[1])
-		if err != nil {
-			usage()
-			os.Exit(0)
-		}
-		tun.RemotePort = rport
-	} else if len(remote) != 1 {
+	remoteHost, remotePort, err := remoteAddr(remotestr)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "sclient: remote: %s\n", err)
 		usage()
-		os.Exit(0)
+		os.Exit(1)
 	}
-	tun.RemoteAddress = remote[0]
+	tun.RemoteAddress, tun.RemotePort = remoteHost, remotePort
 
 	if localstr == "-" || localstr == "|" {
 		// User may specify stdin/stdout instead of net
 		tun.LocalAddress = localstr
 		tun.LocalPort = -1
 	} else {
-		// Test that argument is a local address
-		local := strings.Split(localstr, ":")
-
-		if len(local) == 1 {
-			lport, err := strconv.Atoi(local[0])
-			if err != nil {
-				usage()
-				os.Exit(0)
-			}
-			tun.LocalPort = lport
-		} else {
-			lport, err := strconv.Atoi(local[1])
-			if err != nil {
-				usage()
-				os.Exit(0)
-			}
-			tun.LocalAddress = local[0]
-			tun.LocalPort = lport
+		localHost, localPort, err := localAddr(localstr)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "sclient: local: %s\n", err)
+			usage()
+			os.Exit(1)
 		}
+		tun.LocalAddress, tun.LocalPort = localHost, localPort
 	}
 
 	// SIGINT or SIGTERM cancels ctx, which stops the tunnel.
@@ -153,6 +139,72 @@ func main() {
 		//usage()
 		//os.Exit(6)
 	}
+}
+
+// remoteAddr parses <host> or <host>:<port>; a bare host gets port 443.
+func remoteAddr(s string) (string, int, error) {
+	host, rawPort, hasPort, err := splitHostPort(s)
+	if err != nil {
+		return "", 0, err
+	}
+	if !hasPort {
+		return host, defaultRemotePort, nil
+	}
+	port, err := parsePort(rawPort)
+	if err != nil {
+		return "", 0, fmt.Errorf("remote %q: %w", s, err)
+	}
+	return host, port, nil
+}
+
+// localAddr parses <port> or <host>:<port>; a bare port listens on localhost.
+func localAddr(s string) (string, int, error) {
+	host, rawPort, hasPort, err := splitHostPort(s)
+	if err != nil {
+		return "", 0, err
+	}
+	if !hasPort {
+		port, err := parsePort(s)
+		if err != nil {
+			return "", 0, fmt.Errorf("local %q: want <port> or <host>:<port>", s)
+		}
+		return defaultLocalHost, port, nil
+	}
+	port, err := parsePort(rawPort)
+	if err != nil {
+		return "", 0, fmt.Errorf("local %q: %w", s, err)
+	}
+	return host, port, nil
+}
+
+// splitHostPort splits an address, reporting whether it had a port.
+// "::1:443" is itself a valid IPv6 address, so an unbracketed one is refused.
+func splitHostPort(s string) (string, string, bool, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "", false, errors.New("empty address")
+	}
+
+	host, port, err := net.SplitHostPort(s)
+	if err == nil {
+		return host, port, true, nil
+	}
+	if !strings.Contains(s, ":") {
+		return s, "", false, nil
+	}
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		return s[1 : len(s)-1], "", false, nil
+	}
+	return "", "", false, fmt.Errorf("%q: want <host>:<port>, or an IPv6 address in brackets", s)
+}
+
+// parsePort accepts a decimal port in 1..65535.
+func parsePort(raw string) (int, error) {
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("%q is not a port (1-65535)", raw)
+	}
+	return port, nil
 }
 
 func toSeconds(raw float64) time.Duration {
