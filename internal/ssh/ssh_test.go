@@ -177,7 +177,7 @@ func sshEcho(t *testing.T, banner, extra, alpn string, overTLS bool) int {
 		t.Fatal(err)
 	}
 
-	var ln net.Listener = inner
+	ln := inner
 	if overTLS {
 		cert, err := sshCert()
 		if err != nil {

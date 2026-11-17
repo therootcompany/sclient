@@ -29,10 +29,14 @@ func (rw *StdNet) Close() error                        { return rw.in.Close() }
 func (rw *StdNet) RemoteAddr() net.Addr                { return rw.addr }
 func (rw *StdNet) LocalAddr() net.Addr                 { return rw.addr }
 
-// stdio cannot be timed, so the deadline setters do nothing. A pipe fed by an
-// SSH client writes its banner at once, so the sniff never waits.
-func (rw *StdNet) SetDeadline(_ time.Time) error      { return nil }
-func (rw *StdNet) SetReadDeadline(_ time.Time) error  { return nil }
+// SetDeadline does nothing: stdio cannot be timed. A pipe fed by an SSH client
+// writes its banner at once, so the sniff never waits.
+func (rw *StdNet) SetDeadline(_ time.Time) error { return nil }
+
+// SetReadDeadline does nothing; see SetDeadline.
+func (rw *StdNet) SetReadDeadline(_ time.Time) error { return nil }
+
+// SetWriteDeadline does nothing; see SetDeadline.
 func (rw *StdNet) SetWriteDeadline(_ time.Time) error { return nil }
 
 type stdaddr struct {
