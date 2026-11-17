@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Tunnel specifies which remote encrypted connection to make available as a plain connection locally.
@@ -105,11 +106,43 @@ type netReadWriteCloser interface {
 	RemoteAddr() net.Addr
 }
 
-func pipe(src io.ReadCloser, dst io.Writer, name string) {
-	if _, err := io.Copy(dst, src); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-		fmt.Fprintf(os.Stderr, "[copy error] (%s) %s\n", name, err)
+// pipe relays local <-> remote in both directions, ending each stream when its
+// source is exhausted, then hangs up on both.
+func pipe(local io.ReadWriteCloser, remote io.ReadWriteCloser) error {
+	var (
+		wg        sync.WaitGroup
+		localErr  error
+		remoteErr error
+	)
+
+	wg.Go(func() { localErr = pipeToRemote(local, remote) })
+	wg.Go(func() { remoteErr = pipeToLocal(remote, local) })
+	wg.Wait()
+
+	_ = remote.Close()
+	return errors.Join(localErr, remoteErr)
+}
+
+// pipeToRemote copies local to remote, then half-closes the remote so a
+// keep-alive server sees EOF without losing its buffered answer.
+func pipeToRemote(local io.Reader, remote io.WriteCloser) error {
+	_, err := io.Copy(remote, local)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		return err
 	}
-	_ = src.Close()
+	if cw, ok := remote.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return remote.Close()
+}
+
+// pipeToLocal copies remote to local, then hangs up on the local side.
+func pipeToLocal(remote io.Reader, local io.WriteCloser) error {
+	_, err := io.Copy(local, remote)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		return err
+	}
+	return local.Close()
 }
 
 func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
@@ -136,6 +169,7 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 		}
 	}
 
-	go pipe(conn, remoteConn, "local")
-	pipe(remoteConn, conn, "remote")
+	if err := pipe(conn, remoteConn); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[copy error] %s\n", err)
+	}
 }
