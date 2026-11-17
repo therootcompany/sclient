@@ -222,6 +222,12 @@ go run github.com/therootcompany/sclient/cmd/sclient example.com:443 localhost:3
 # Tests
 
 ```bash
-go test ./...                  # unit and integration tests, no network needed
+go build -o bin/sclient ./cmd/sclient
+
+sh tests/ssh-local-smoke.sh    # SSH mode against loopback banner servers
+sh tests/ssh-smoke.sh all      # live SSH-mode probes against the fleet
 ./tests/smoke.sh example.com   # live smoke test against a real TLS remote
 ```
+
+The fleet probes read their host lists from the local deployment notes; the
+script itself names no host.
