@@ -408,6 +408,50 @@ func TestProbeSkipsTLSForUnnamedIP(t *testing.T) {
 	}
 }
 
+// A bare IP keeps no server name; naming the server is what opens the TLS side.
+func TestResolveServerName(t *testing.T) {
+	cases := []struct {
+		host       string
+		serverName string
+		want       string
+	}{
+		{"example.com", "", "example.com"},
+		{"127.0.0.1", "", ""},
+		{"127.0.0.1", "guest.example.com", "guest.example.com"},
+	}
+	for _, tc := range cases {
+		got := Config{Host: tc.host, ServerName: tc.serverName}.resolved().ServerName
+		if got != tc.want {
+			t.Errorf("resolved ServerName of %q with %q = %q, want %q", tc.host, tc.serverName, got, tc.want)
+		}
+	}
+}
+
+// Serve resolves the config the same way the probe expects: an unnamed IP still
+// skips the TLS candidate.
+func TestServeSkipsTLSForUnnamedIP(t *testing.T) {
+	tlsPort := sshEcho(t, "SSH-2.0-tls-server", "", "ssh", true)
+	sshPort := sshEcho(t, "SSH-2.0-plain-server", "", "", false)
+
+	cfg := loopbackConfig(tlsPort, sshPort)
+	cfg.Host = "127.0.0.1"
+	cfg.Verbose = true
+
+	local, peer := net.Pipe()
+	defer local.Close()
+	defer peer.Close()
+	_, _ = io.WriteString(peer, "SSH-2.0-client\r\nBYE\r\n")
+	_ = peer.Close()
+
+	var report strings.Builder
+	if err := Serve(context.Background(), cfg, local, &report); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	if !strings.Contains(report.String(), "no name to route on") {
+		t.Errorf("report = %q, want the skipped TLS candidate", report.String())
+	}
+}
+
 // Naming the server makes the TLS probe fair game for an IP.
 func TestProbeTriesTLSForNamedIP(t *testing.T) {
 	tlsPort := sshEcho(t, "SSH-2.0-tls-server", "", "ssh", true)

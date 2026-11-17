@@ -61,7 +61,9 @@ const (
 	sniffTimeout = 100 * time.Millisecond
 )
 
-// resolved fills in the engine defaults.
+// resolved fills in the engine defaults. A bare IP keeps no server name: a proxy
+// that routes by name has nothing to route on, so naming the server is what makes
+// the TLS side worth dialling.
 func (c Config) resolved() Config {
 	if c.SSHPort == 0 {
 		c.SSHPort = 22
@@ -69,7 +71,7 @@ func (c Config) resolved() Config {
 	if c.TLSPort == 0 {
 		c.TLSPort = 443
 	}
-	if c.ServerName == "" {
+	if c.ServerName == "" && net.ParseIP(c.Host) == nil {
 		c.ServerName = c.Host
 	}
 	if c.ALPN == nil {
