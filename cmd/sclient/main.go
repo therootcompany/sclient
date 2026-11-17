@@ -25,8 +25,8 @@ const (
 	defaultLocalHost  = "localhost"
 )
 
-// Stamped by goreleaser at release time (-Dmain.version, -Dmain.commit,
-// -Dmain.date); init() fills in what is left unset for go run and go build.
+// Stamped by goreleaser at release time (-X main.version, -X main.commit,
+// -X main.date); init() fills in what is left unset for go run and go build.
 var (
 	version = ""
 	commit  = ""
