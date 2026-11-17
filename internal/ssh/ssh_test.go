@@ -83,6 +83,59 @@ func silentTLSServer(t *testing.T) int {
 	return p
 }
 
+// slowTLSServer answers the banner only after a delay, so the plain port is ready
+// first and the TLS handshake is still in flight when the grace window opens.
+func slowTLSServer(t *testing.T, banner, alpn string, delay time.Duration) int {
+	t.Helper()
+
+	cert, err := sshCert()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+	if alpn != "" {
+		tlsConfig.NextProtos = []string{alpn}
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				time.Sleep(delay)
+				tlsConn := tls.Server(c, tlsConfig)
+				if err := tlsConn.Handshake(); err != nil {
+					return
+				}
+				r := bufio.NewReader(tlsConn)
+				if _, err := readBanner(r); err != nil {
+					return
+				}
+				_, _ = io.WriteString(tlsConn, banner+"\r\n")
+				_, _ = r.ReadString('\n')
+			}(conn)
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // silentTCPServer accepts connections and never answers.
 func silentTCPServer(t *testing.T) int {
 	t.Helper()
@@ -205,6 +258,25 @@ func TestProbePrefersTLS(t *testing.T) {
 	}
 	if chosen.banner != "SSH-2.0-tls-server" {
 		t.Errorf("banner = %q, want the TLS server's", chosen.banner)
+	}
+}
+
+// A TLS connection that is slow to answer is still the TLS connection: the plain
+// port's undeclared banner proves nothing, so the handshake keeps its chance and
+// the grace does not cut it off.
+func TestProbeSlowTLSStillWins(t *testing.T) {
+	tlsPort := slowTLSServer(t, "SSH-2.0-slow-tls-server", "ssh", 60*time.Millisecond)
+	sshPort := sshEcho(t, "SSH-2.0-plain-server", "", "", false)
+
+	chosen, err := probe(context.Background(), loopbackConfig(tlsPort, sshPort), "SSH-2.0-client", io.Discard)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if chosen.name != "tls" {
+		t.Errorf("probe chose %s (%s), want tls", chosen.name, chosen.address)
+	}
+	if chosen.banner != "SSH-2.0-slow-tls-server" {
+		t.Errorf("banner = %q, want the slow TLS server's", chosen.banner)
 	}
 }
 
