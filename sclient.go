@@ -182,21 +182,8 @@ func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn net.C
 		}
 	}
 
-	// Pipe copies both directions and closes both when either side ends. Canceling
-	// ctx closes both early.
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := tunnel.Pipe(&tunnel.BufferedConn{R: local, Conn: conn}, remoteConn); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "[copy error] %s\n", err)
-		}
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		_ = conn.Close()
-		_ = remoteConn.Close()
-		<-done
+	// PipeContext copies both directions and hangs up on both when ctx is canceled.
+	if err := tunnel.PipeContext(ctx, &tunnel.BufferedConn{R: local, Conn: conn}, remoteConn); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[copy error] %s\n", err)
 	}
 }

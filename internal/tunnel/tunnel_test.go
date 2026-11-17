@@ -45,6 +45,33 @@ func TestDisplayAddr(t *testing.T) {
 	}
 }
 
+// Canceling ctx hangs up on both sides of a session that is still open, and the
+// closed connections are a clean ending, not an error.
+func TestPipeContextEndsOnCancel(t *testing.T) {
+	local, remote := net.Pipe()
+	defer local.Close()
+	defer remote.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- PipeContext(ctx, local, remote) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("PipeContext: got %v, want nil", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("PipeContext: canceling the context did not end the session")
+	}
+
+	if _, err := local.Read(make([]byte, 1)); err == nil {
+		t.Error("PipeContext: the local side stayed open after cancel")
+	}
+}
+
 // 0 means 3x the connect, floored at 150ms; an explicit timeout wins.
 func TestHandshakeDeadline(t *testing.T) {
 	cases := []struct {

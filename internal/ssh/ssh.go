@@ -444,20 +444,9 @@ func relay(ctx context.Context, chosen *candidate, client *bufio.Reader, local n
 		_, _ = fmt.Fprintf(local, "%s\r\n", chosen.banner)
 	}
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := tunnel.Pipe(&tunnel.BufferedConn{R: client, Conn: local}, chosen.conn); err != nil {
-			_, _ = fmt.Fprintf(errOut, "[copy error] %s\n", err)
-		}
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		_ = local.Close()
-		_ = chosen.conn.Close()
-		<-done
+	// PipeContext copies both directions and hangs up on both when ctx is canceled.
+	if err := tunnel.PipeContext(ctx, &tunnel.BufferedConn{R: client, Conn: local}, chosen.conn); err != nil {
+		_, _ = fmt.Fprintf(errOut, "[copy error] %s\n", err)
 	}
 	return nil
 }

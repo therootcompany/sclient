@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -23,6 +24,26 @@ func Pipe(local io.ReadWriteCloser, remote io.ReadWriteCloser) error {
 
 	_ = remote.Close()
 	return errors.Join(localErr, remoteErr)
+}
+
+// PipeContext is Pipe with a deadline: canceling ctx hangs up on both sides and
+// returns nil, so a session that is still open ends cleanly rather than hanging.
+func PipeContext(ctx context.Context, local, remote io.ReadWriteCloser) error {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = Pipe(local, remote)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		_ = local.Close()
+		_ = remote.Close()
+		<-done
+		return nil
+	}
 }
 
 // pipeToRemote copies local to remote, then half-closes the remote so a
