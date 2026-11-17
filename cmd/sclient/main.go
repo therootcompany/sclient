@@ -70,15 +70,16 @@ func main() {
 	cfg := MainConfig{}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.Usage = func() {
-		printVersion(os.Stderr)
-		_, _ = fmt.Fprintf(os.Stderr, "\nUSAGE\n  %s [flags] <remote> <local>\n\n", name)
-		_, _ = fmt.Fprintf(os.Stderr, "   ex: %s example.com 3000\n", name)
-		_, _ = fmt.Fprintf(os.Stderr, "      (%s example.com:443 localhost:3000)\n", name)
-		_, _ = fmt.Fprintf(os.Stderr, "   ex: %s example.com:8443 0.0.0.0:4080\n", name)
-		_, _ = fmt.Fprintf(os.Stderr, "   ex: %s example.com:443 -\n", name)
-		_, _ = fmt.Fprintf(os.Stderr, "\nFLAGS\n")
+		w := fs.Output()
+		printVersion(w)
+		_, _ = fmt.Fprintf(w, "\nUSAGE\n  %s [flags] <remote> <local>\n\n", name)
+		_, _ = fmt.Fprintf(w, "   ex: %s example.com 3000\n", name)
+		_, _ = fmt.Fprintf(w, "      (%s example.com:443 localhost:3000)\n", name)
+		_, _ = fmt.Fprintf(w, "   ex: %s example.com:8443 0.0.0.0:4080\n", name)
+		_, _ = fmt.Fprintf(w, "   ex: %s example.com:443 -\n", name)
+		_, _ = fmt.Fprintf(w, "\nFLAGS\n")
 		fs.PrintDefaults()
-		_, _ = fmt.Println()
+		_, _ = fmt.Fprintln(w)
 	}
 
 	fs.StringVar(&cfg.alpn, "alpn", "", "acceptable protocols, ex: 'h2,http/1.1' 'ssh'")
@@ -100,8 +101,8 @@ func main() {
 			printVersion(os.Stdout)
 			os.Exit(0)
 		case "help", "-help", "--help":
-			printVersion(os.Stdout)
-			fmt.Println()
+			// fs.Usage already leads with the version; fs.Output() sends the
+			// whole thing to stdout instead of the default stderr.
 			fs.SetOutput(os.Stdout)
 			fs.Usage()
 			os.Exit(0)
