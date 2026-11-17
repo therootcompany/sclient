@@ -111,7 +111,7 @@ fn_case A 3000 --ssh-port "$g_plain" --insecure --servername demo.local -v 127.0
 fn_check "A chosen tls" "chosen: tls" agents/tmp/smoke-A.log
 
 # B: the plain banner declares the name we dialled, which is proof on its own,
-# so the TLS handshake is cut short instead of running out its clock.
+# so the TLS handshake is cut short instead of running to its deadline.
 fn_start_demo "" demo.local demo.local
 fn_case B 3001 --ssh-port "$g_plain" --insecure --servername demo.local -v 127.0.0.1:"$g_tls" 127.0.0.1:3001
 fn_check "B declared plain wins" "chosen: ssh 127.0.0.1:2200" agents/tmp/smoke-B.log

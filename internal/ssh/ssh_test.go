@@ -84,7 +84,7 @@ func silentTLSServer(t *testing.T) int {
 }
 
 // slowTLSServer answers the banner only after a delay, so the plain port is ready
-// first and the TLS handshake is still in flight when the grace window opens.
+// first and the TLS handshake is still in flight when the grace period starts.
 func slowTLSServer(t *testing.T, banner, alpn string, delay time.Duration) int {
 	t.Helper()
 
@@ -263,7 +263,7 @@ func TestProbePrefersTLS(t *testing.T) {
 
 // A TLS connection that is slow to answer is still the TLS connection: the plain
 // port's undeclared banner proves nothing, so the handshake keeps its chance and
-// the grace does not cut it off.
+// the grace period does not cut it off.
 func TestProbeSlowTLSStillWins(t *testing.T) {
 	tlsPort := slowTLSServer(t, "SSH-2.0-slow-tls-server", "ssh", 60*time.Millisecond)
 	sshPort := sshEcho(t, "SSH-2.0-plain-server", "", "", false)
@@ -425,8 +425,8 @@ func TestProbeTriesTLSForNamedIP(t *testing.T) {
 	}
 }
 
-// A port that never speaks ends on its handshake clock, not the connect clock.
-func TestProbeHandshakeClockFloor(t *testing.T) {
+// A port that never speaks ends on its handshake deadline, not the connect timeout.
+func TestProbeHandshakeDeadlineFloor(t *testing.T) {
 	tlsPort := silentTLSServer(t)
 	sshPort := sshEcho(t, "SSH-2.0-plain-server", "", "", false)
 
@@ -491,7 +491,7 @@ func TestProbeKeepsTheReadAhead(t *testing.T) {
 }
 
 // A port that connects but never answers the banner is refused on the banner
-// window, not on the connect clock.
+// timeout, not on the connect timeout.
 func TestProbeRefusesASilentPort(t *testing.T) {
 	silent := silentTCPServer(t)
 
@@ -506,9 +506,9 @@ func TestProbeRefusesASilentPort(t *testing.T) {
 	}
 }
 
-// The banner window is floored, so a short connect clock refuses a silent port on
-// the banner read instead of losing the write race with the dial clock.
-func TestProbeBannerWindowFloor(t *testing.T) {
+// The banner timeout is floored, so a short connect timeout refuses a silent port
+// on the banner read instead of losing the write race with the probe deadline.
+func TestProbeBannerTimeoutFloor(t *testing.T) {
 	sshPort := silentTCPServer(t)
 
 	cfg := loopbackConfig(1, sshPort)
@@ -520,14 +520,14 @@ func TestProbeBannerWindowFloor(t *testing.T) {
 		t.Fatalf("probe: got %v, want ErrNoServer", err)
 	}
 	if strings.Contains(report.String(), "closed network connection") {
-		t.Errorf("the banner write lost the race with the dial clock: %q", report.String())
+		t.Errorf("the banner write lost the race with the probe deadline: %q", report.String())
 	}
 	if !strings.Contains(report.String(), "read banner") {
 		t.Errorf("report = %q, want a banner read failure", report.String())
 	}
 }
 
-// The caller's deadline bounds the probe even when the connect clock is long.
+// The caller's deadline bounds the probe even when the connect timeout is long.
 func TestProbeHonorsCallerDeadline(t *testing.T) {
 	tlsPort := silentTCPServer(t)
 	sshPort := silentTCPServer(t)
@@ -545,12 +545,12 @@ func TestProbeHonorsCallerDeadline(t *testing.T) {
 		t.Fatalf("probe: got %v, want ErrNoServer", err)
 	}
 	if elapsed > 600*time.Millisecond {
-		t.Errorf("probe ran %s against a 10s clock under a 200ms deadline", ElapsedFor(elapsed))
+		t.Errorf("probe ran %s with a 10s connect timeout under a 200ms deadline", ElapsedFor(elapsed))
 	}
 }
 
 // A plain banner that declares the name being dialled is proof on its own: the TLS
-// handshake is cut short instead of running out its clock.
+// handshake is cut short instead of running to its deadline.
 func TestProbeDeclaredPlainWinsEarly(t *testing.T) {
 	tlsPort := silentTLSServer(t)
 	sshPort := sshEcho(t, "SSH-2.0-OpenSSH_9.6 host:localhost", "", "", false)

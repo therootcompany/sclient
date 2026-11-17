@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Dial is everything one dial needs: the name, the protocols, and the two clocks.
+// Dial is everything one dial needs: the name, the protocols, and the two timeouts.
 type Dial struct {
 	ServerName         string
 	NextProtos         []string
@@ -25,8 +25,8 @@ const (
 	handshakeMultiplier  = 3
 )
 
-// ConnectClock is the TCP deadline: the operator's, or the default.
-func (d Dial) ConnectClock() time.Duration {
+// ConnectTimeout is the TCP deadline: the operator's, or the default.
+func (d Dial) ConnectTimeout() time.Duration {
 	if d.TCPTimeout > 0 {
 		return d.TCPTimeout
 	}
@@ -52,10 +52,10 @@ func (d Dial) TLSConfig(protos []string) *tls.Config {
 	}
 }
 
-// DialTLS connects, then handshakes, each under its own deadline. onTransport,
-// when given, is called the moment the socket is up.
-func (d Dial) DialTLS(ctx context.Context, remote string, protos []string, onTransport func(time.Duration)) (*tls.Conn, error) {
-	connect := d.ConnectClock()
+// DialTLS connects, then handshakes, each under its own deadline. onConnected,
+// when given, is called as soon as the TCP connection is established.
+func (d Dial) DialTLS(ctx context.Context, remote string, protos []string, onConnected func(time.Duration)) (*tls.Conn, error) {
+	connect := d.ConnectTimeout()
 	ctx, cancel := context.WithTimeout(ctx, connect+d.HandshakeDeadline(connect))
 	defer cancel()
 
@@ -64,8 +64,8 @@ func (d Dial) DialTLS(ctx context.Context, remote string, protos []string, onTra
 	if err != nil {
 		return nil, err
 	}
-	if onTransport != nil {
-		onTransport(time.Since(start))
+	if onConnected != nil {
+		onConnected(time.Since(start))
 	}
 
 	handshake, cancelHandshake := context.WithTimeout(ctx, d.HandshakeDeadline(time.Since(start)))
@@ -79,9 +79,9 @@ func (d Dial) DialTLS(ctx context.Context, remote string, protos []string, onTra
 	return remoteConn, nil
 }
 
-// DialPlain connects without TLS, on the same connect clock.
-func (d Dial) DialPlain(ctx context.Context, remote string, onTransport func(time.Duration)) (net.Conn, error) {
-	connect := d.ConnectClock()
+// DialPlain connects without TLS, on the same connect timeout.
+func (d Dial) DialPlain(ctx context.Context, remote string, onConnected func(time.Duration)) (net.Conn, error) {
+	connect := d.ConnectTimeout()
 	ctx, cancel := context.WithTimeout(ctx, connect)
 	defer cancel()
 
@@ -90,8 +90,8 @@ func (d Dial) DialPlain(ctx context.Context, remote string, onTransport func(tim
 	if err != nil {
 		return nil, err
 	}
-	if onTransport != nil {
-		onTransport(time.Since(start))
+	if onConnected != nil {
+		onConnected(time.Since(start))
 	}
 	return conn, nil
 }

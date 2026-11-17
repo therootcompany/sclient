@@ -126,20 +126,20 @@ func TestBannerMismatch(t *testing.T) {
 	}
 }
 
-func TestGraceFor(t *testing.T) {
+func TestGracePeriod(t *testing.T) {
 	tests := []struct {
 		elapsed time.Duration
 		want    time.Duration
 	}{
-		{0, minGrace},
-		{100 * time.Millisecond, minGrace},
+		{0, minGracePeriod},
+		{100 * time.Millisecond, minGracePeriod},
 		{300 * time.Millisecond, 150 * time.Millisecond},
 		{400 * time.Millisecond, 200 * time.Millisecond},
 		{3 * time.Second, 1500 * time.Millisecond},
 	}
 	for _, tc := range tests {
-		if got := graceFor(tc.elapsed); got != tc.want {
-			t.Errorf("graceFor(%v) = %v, want %v", tc.elapsed, got, tc.want)
+		if got := gracePeriod(tc.elapsed); got != tc.want {
+			t.Errorf("gracePeriod(%v) = %v, want %v", tc.elapsed, got, tc.want)
 		}
 	}
 }
