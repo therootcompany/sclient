@@ -26,7 +26,7 @@ type Tunnel struct {
 // DialAndListen will create a test TLS connection to the remote address and then
 // begin listening locally. Each local connection will result in a separate remote connection.
 func (t *Tunnel) DialAndListen() error {
-	remote := t.RemoteAddress + ":" + strconv.Itoa(t.RemotePort)
+	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
 	conn, err := tls.Dial("tcp", remote,
 		&tls.Config{
 			ServerName:         t.ServerName,
@@ -55,7 +55,7 @@ func (t *Tunnel) DialAndListen() error {
 	}
 
 	// use net.Conn
-	local := t.LocalAddress + ":" + strconv.Itoa(t.LocalPort)
+	local := net.JoinHostPort(t.LocalAddress, strconv.Itoa(t.LocalPort))
 	ln, err := net.Listen("tcp", local)
 	if err != nil {
 		return err
