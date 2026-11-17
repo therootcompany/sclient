@@ -25,6 +25,15 @@ type Tunnel struct {
 	Silent             bool
 }
 
+// tlsConfig is the client config for one dial to the remote.
+func (t *Tunnel) tlsConfig() *tls.Config {
+	return &tls.Config{
+		ServerName:         t.ServerName,
+		NextProtos:         t.NextProtos,
+		InsecureSkipVerify: t.InsecureSkipVerify,
+	}
+}
+
 // DialAndListen runs the tunnel with a context that is never canceled.
 func (t *Tunnel) DialAndListen() error {
 	return t.DialAndListenContext(context.Background())
@@ -55,12 +64,7 @@ func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 	// use net.Conn
 	// Probe once before binding, so the operator knows early whether the remote is
 	// alive; each local connection dials on its own.
-	probeConn, err := tls.Dial("tcp", remote,
-		&tls.Config{
-			ServerName:         t.ServerName,
-			NextProtos:         t.NextProtos,
-			InsecureSkipVerify: t.InsecureSkipVerify,
-		})
+	probeConn, err := tls.Dial("tcp", remote, t.tlsConfig())
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
@@ -169,12 +173,7 @@ func pipeToLocal(remote io.Reader, local io.WriteCloser) error {
 }
 
 func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn netReadWriteCloser) {
-	remoteConn, err := tls.Dial("tcp", remote,
-		&tls.Config{
-			ServerName:         t.ServerName,
-			NextProtos:         t.NextProtos,
-			InsecureSkipVerify: t.InsecureSkipVerify,
-		})
+	remoteConn, err := tls.Dial("tcp", remote, t.tlsConfig())
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
