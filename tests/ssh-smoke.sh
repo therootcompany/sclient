@@ -5,8 +5,8 @@ set -Cue
 # connect, read the identification string, hang up. No auth, no state changes.
 #
 # Host names are never written here. They come from the deployment notes:
-#   ~/.config/agents/tls-routers.tsv       a router's own ssh is on :22, its TLS
-#                                          front offers no ssh ALPN  -> expect :22
+#   ~/.config/agents/tls-routers.tsv       a router's own ssh is on :22; the TLS
+#                                          port on that name offers no ssh ALPN -> expect :22
 #   ~/.config/agents/tls-router-guests.tsv a guest name reaches its server only
 #                                          through :443 + SNI + ALPN ssh; :22 on
 #                                          that name is the router's own ssh
