@@ -92,7 +92,7 @@ func main() {
 		}
 	}
 
-	sclient := &sclient.Tunnel{
+	tun := &sclient.Tunnel{
 		RemotePort:         443,
 		LocalAddress:       "localhost",
 		InsecureSkipVerify: insecure,
@@ -110,12 +110,12 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
-	sclient.RemoteAddress, sclient.RemotePort = remoteHost, remotePort
+	tun.RemoteAddress, tun.RemotePort = remoteHost, remotePort
 
 	if localstr == "-" || localstr == "|" {
 		// User may specify stdin/stdout instead of net
-		sclient.LocalAddress = localstr
-		sclient.LocalPort = -1
+		tun.LocalAddress = localstr
+		tun.LocalPort = -1
 	} else {
 		localHost, localPort, err := localAddr(localstr)
 		if err != nil {
@@ -123,10 +123,10 @@ func main() {
 			usage()
 			os.Exit(2)
 		}
-		sclient.LocalAddress, sclient.LocalPort = localHost, localPort
+		tun.LocalAddress, tun.LocalPort = localHost, localPort
 	}
 
-	if err := sclient.DialAndListen(); err != nil {
+	if err := tun.DialAndListen(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "%s\n", err)
 		os.Exit(1)
 	}
