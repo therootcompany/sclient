@@ -223,13 +223,26 @@ func displayAddr(addr net.Addr) string {
 
 // pipe copies src to dst; io.EOF and a close we initiated end the session,
 // they are not errors.
-func pipe(dst io.Writer, src io.Reader, name string) {
-	if _, err := io.Copy(dst, src); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-		fmt.Fprintf(os.Stderr, "[copy error] (%s) %s\n", name, err)
+// pipe copies r to w. io.Copy stops when r hits EOF, but the peer only sees the
+// end of the stream when w is closed, so pipe closes the writer it is done
+// with. A TLS connection is half-closed (close_notify) so whatever the front
+// has already buffered can still come back through the open read side.
+func pipe(r io.ReadCloser, w io.WriteCloser) error {
+	_, err := io.Copy(w, r)
+
+	// Write the EOF. A writer that can half-close keeps its read side open, so
+	// the peer's answer still arrives; anything else is closed outright.
+	var closeErr error
+	if cw, ok := w.(interface{ CloseWrite() error }); ok {
+		closeErr = cw.CloseWrite()
+	} else {
+		closeErr = w.Close()
 	}
-	if c, ok := src.(io.Closer); ok {
-		_ = c.Close()
+
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		return err
 	}
+	return closeErr
 }
 
 func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
@@ -253,8 +266,21 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 		}
 	}
 
-	// local -> remote and remote -> local; each pump closes its source
-	// when the copy ends
-	go pipe(sclient, conn, "local")
-	pipe(conn, sclient, "remote")
+	// Two pumps. Each pump's source hitting EOF must be echoed to its
+	// destination as a real end-of-stream: a keep-alive front otherwise sits on
+	// an open connection until it times out (33s on a public front). The TLS
+	// side is half-closed, not closed, so whatever the front has already
+	// buffered still gets through.
+	// local -> remote: when stdin (or the local client) is at EOF the front has
+	// to be told, or it waits on the keep-alive connection until it times out.
+	go func() {
+		if err := pipe(conn, sclient); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[copy error] (local) %s\n", err)
+		}
+	}()
+	// remote -> local: the front hung up, so hang up on the local side.
+	if err := pipe(sclient, conn); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[copy error] (remote) %s\n", err)
+	}
+	_ = sclient.Close()
 }
