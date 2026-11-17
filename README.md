@@ -39,7 +39,10 @@ A poor man's (or Windows user's) makeshift replacement for `openssl s_client`,
 - [Install](#install)
 - [Usage](#usage)
 - [Examples](#examples)
-- [Build from Source](#build-from-source)
+- [SSH mode](#ssh-mode)
+- [API](#api)
+- [Build from source](#build-from-source)
+- [Tests](#tests)
 
 # Install
 
@@ -147,7 +150,7 @@ sclient --servername "Robert'); DROP TABLE Students;" -k example.com localhost:3
 sclient --servername "../../../.hidden/private.txt" -k example.com localhost:3000
 ```
 
-# SSH mode (`--ssh-port` / `--ssh`)
+# SSH mode
 
 A name can answer on plain `:22` **and** on TLS-terminated `:443` (ALPN `ssh`),
 sometimes on different servers. Naming `--ssh-port` dials both at once, runs the
