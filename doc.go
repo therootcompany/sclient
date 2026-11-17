@@ -45,9 +45,10 @@ NextProtos or if its banner declares a host other than ServerName.
 		LocalPort:          3000,
 	}
 
-ErrNoServer means neither port is usable. The report names every candidate and the
-banner it answered with, prefixed with the command's name, and ends with ssh's own
-closing line: `sclient: Connection closed by "example.com" ports [22, 443]`.
+ErrNoServer means neither port is usable. The report is prefixed with the command
+and the name being dialled, names every candidate by port and the reason it lost,
+and ends with ssh's own closing line: `sclient: Connection closed by "example.com"
+ports [22, 443]`.
 
 # Try the CLI
 

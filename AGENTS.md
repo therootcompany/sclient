@@ -75,7 +75,8 @@ which to accept:
   this name: it is closed at the handshake and never sees the banner.
 - Otherwise, if 22 answers with an SSH banner, it is plain ssh: use it.
 - Neither answers: no usable server, reported to the diagnostics destination. The
-  report starts with the command name and ends with ssh's own closing line,
+  report is `sclient: <host>: no usable server`, then one indented line per candidate
+  naming only its port and why it lost, then ssh's own closing line,
   `sclient: Connection closed by "<host>" ports [22, 443]` (`"NO SUCH HOST" port [0]`
   when the name never resolved).
 
@@ -108,7 +109,7 @@ the handshake from the connect (unset = auto, 3x that candidate's connect, floor
 resolves on its own deadline:
 
 - connect, handshake, and banner each run on their own deadline;
-- a blackholed connect is cut by the grace period (150ms after the first transport
+- a blackholed connect is cut by the grace period (300ms after the first transport
   connects);
 - a plain banner that *declares* the name we dialled is proof on its own, so the
   TLS handshake is closed instead of running to its deadline;

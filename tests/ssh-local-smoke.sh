@@ -140,7 +140,7 @@ fn_check "B tls cut short" "tls 127.0.0.1:4430: canceled" agents/tmp/smoke-B.log
 # C: TLS offers no ALPN - the gate refuses it and the plain port is used.
 fn_start_demo "" "" ""
 fn_case C 3002 --ssh-port "$g_plain" --insecure --servername demo.local -v 127.0.0.1:"$g_tls" 127.0.0.1:3002
-fn_check "C alpn gate" "negotiated ALPN (none), wanted" agents/tmp/smoke-C.log
+fn_check "C alpn gate" "negotiated ALPN (none) in" agents/tmp/smoke-C.log
 
 # D: stdio mode through a pipe: the payload is stdout, diagnostics are the log.
 fn_start_demo ssh demo.local ""
@@ -160,7 +160,7 @@ g_jobs="$g_jobs $job"
 fn_wait_up 3006
 printf 'SSH-2.0-SmokeClient_1.0\r\nBYE\r\n' | timeout 0.3 nc 127.0.0.1 3006 >/dev/null 2>&1 || true
 kill "$job" 2>/dev/null || true
-fn_check "E no usable server" "sclient: no usable server" agents/tmp/smoke-E.log
+fn_check "E no usable server" "sclient: 127.0.0.1: no usable server" agents/tmp/smoke-E.log
 fn_check "E close line names the ports" 'Connection closed by "127.0.0.1" ports' agents/tmp/smoke-E.log
 
 # F: a named --ssh-port 0 is a usage error (2), not "off".

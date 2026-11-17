@@ -192,9 +192,9 @@ it lost, and then closes the session in ssh's own words - so ssh's bare
 `Connection closed by UNKNOWN port 65535` has a cause:
 
 ```text
-sclient: no usable server
-  tls example.com:443: negotiated ALPN "http/1.1", wanted one of [ssh]
-  ssh example.com:22: connect: connection refused
+sclient: example.com: no usable server
+  tls 443: negotiated ALPN "http/1.1" in 90ms, wanted one of [ssh]
+  ssh 22: timed out after 180ms
 sclient: Connection closed by "example.com" ports [22, 443]
 ```
 

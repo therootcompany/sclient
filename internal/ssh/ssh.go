@@ -91,7 +91,7 @@ type Config struct {
 
 const (
 	// minGracePeriod is the floor of the grace period a still-pending dial gets.
-	minGracePeriod = 150 * time.Millisecond
+	minGracePeriod = 300 * time.Millisecond
 	// bannerReadMargin sits inside the banner timeout, so a peer that never
 	// answers times out on the read instead of losing the race with the deadline
 	// that ends the read.
@@ -140,6 +140,7 @@ func (c Config) dial() tunnel.Dial {
 type candidate struct {
 	name    string // "ssh" or "tls"
 	address string
+	port    int
 	conn    net.Conn
 	r       *bufio.Reader // keeps the read-ahead (a glued KEXINIT) for the relay
 	banner  string
@@ -369,7 +370,7 @@ func bannerTimeout(connect, remaining time.Duration) time.Duration {
 // dialPlain connects to the SSH port without TLS, then exchanges banners.
 func dialPlain(probeCtx context.Context, cfg Config, clientBanner string, onConnected func(time.Duration), debugf func(string, ...any)) *candidate {
 	start := time.Now()
-	c := &candidate{name: "ssh", address: net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.SSHPort))}
+	c := &candidate{name: "ssh", address: net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.SSHPort)), port: cfg.SSHPort}
 
 	dial := cfg.dial()
 	conn, err := dial.DialPlain(probeCtx, c.address, onConnected)
@@ -387,7 +388,7 @@ func dialPlain(probeCtx context.Context, cfg Config, clientBanner string, onConn
 // this name, so it never sees the banner.
 func dialTLS(ctx, probeCtx context.Context, cfg Config, clientBanner string, onConnected func(time.Duration), decided chan struct{}, debugf func(string, ...any)) *candidate {
 	start := time.Now()
-	c := &candidate{name: "tls", address: net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.TLSPort))}
+	c := &candidate{name: "tls", address: net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.TLSPort)), port: cfg.TLSPort}
 
 	dial := cfg.dial()
 	conn, err := dial.DialPlain(probeCtx, c.address, onConnected)
@@ -424,7 +425,8 @@ func dialTLS(ctx, probeCtx context.Context, cfg Config, clientBanner string, onC
 		if negotiated != "" {
 			name = strconv.Quote(negotiated)
 		}
-		c.err = fmt.Errorf("negotiated ALPN %s, wanted one of [%s]", name, strings.Join(cfg.ALPN, ", "))
+		c.err = fmt.Errorf("negotiated ALPN %s in %s, wanted one of [%s]",
+			name, tunnel.ElapsedText(time.Since(start)), strings.Join(cfg.ALPN, ", "))
 		return c
 	}
 
@@ -511,12 +513,12 @@ func reportNoServer(cfg Config, ready, failed []*candidate, errOut io.Writer) {
 		return
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s: no usable server\n", cfg.Name)
+	fmt.Fprintf(&b, "%s: %s: no usable server\n", cfg.Name, cfg.Host)
 	for _, c := range ready {
-		fmt.Fprintf(&b, "  %s %s: %s\n", c.name, c.address, c.mismatch)
+		fmt.Fprintf(&b, "  %s %d: %s\n", c.name, c.port, c.mismatch)
 	}
 	for _, c := range failed {
-		fmt.Fprintf(&b, "  %s %s: %v\n", c.name, c.address, c.err)
+		fmt.Fprintf(&b, "  %s %d: %v\n", c.name, c.port, c.err)
 	}
 	close := CloseError{Name: cfg.Name, Reason: cfg.Host, Ports: attemptedPorts(cfg), cause: ErrNoServer}
 	fmt.Fprintf(&b, "%s\n", close.Line())
@@ -529,7 +531,7 @@ func reportClose(errOut io.Writer, cfg Config, err error, ports []int) {
 	if cfg.Silent {
 		return
 	}
-	_, _ = fmt.Fprintf(errOut, "%s: no usable server: %s\n", cfg.Name, strings.ToLower(err.Error()))
+	_, _ = fmt.Fprintf(errOut, "%s: %s: no usable server: %s\n", cfg.Name, cfg.Host, strings.ToLower(lookupReason(err)))
 	close := CloseError{Name: cfg.Name, Reason: lookupReason(err), Ports: ports, cause: ErrNoServer}
 	_, _ = fmt.Fprintln(errOut, close.Line())
 }
@@ -545,7 +547,8 @@ func attemptedPorts(cfg Config) []int {
 }
 
 // lookupReason is the short cause of a failed lookup: "lookup host: no such host"
-// becomes "NO SUCH HOST" - there is no host to name, so the cause takes its place.
+// becomes "NO SUCH HOST" - the host is in the header already, so the cause is only
+// the part that names what went wrong.
 func lookupReason(err error) string {
 	text := err.Error()
 	index := strings.LastIndex(text, ": ")

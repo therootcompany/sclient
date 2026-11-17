@@ -110,10 +110,12 @@ func TestGracePeriod(t *testing.T) {
 		elapsed time.Duration
 		want    time.Duration
 	}{
+		// Half the elapsed time, floored at minGracePeriod (300ms).
 		{0, minGracePeriod},
 		{100 * time.Millisecond, minGracePeriod},
-		{300 * time.Millisecond, 150 * time.Millisecond},
-		{400 * time.Millisecond, 200 * time.Millisecond},
+		{300 * time.Millisecond, minGracePeriod},
+		{400 * time.Millisecond, minGracePeriod},
+		{600 * time.Millisecond, 300 * time.Millisecond},
 		{3 * time.Second, 1500 * time.Millisecond},
 	}
 	for _, tc := range tests {

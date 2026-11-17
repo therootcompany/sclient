@@ -436,7 +436,7 @@ func TestProbeReportClosesLikeSSH(t *testing.T) {
 	if len(lines) != 4 {
 		t.Fatalf("report = %q, want a header, two candidates and the close line", report.String())
 	}
-	if lines[0] != "ssh-tls-proxy: no usable server" {
+	if lines[0] != "ssh-tls-proxy: localhost: no usable server" {
 		t.Errorf("header = %q, want the command named", lines[0])
 	}
 	for _, line := range lines[1:3] {
@@ -447,6 +447,29 @@ func TestProbeReportClosesLikeSSH(t *testing.T) {
 	want := fmt.Sprintf(`ssh-tls-proxy: Connection closed by "localhost" ports [%d, %d]`, sshPort, tlsPort)
 	if lines[3] != want {
 		t.Errorf("close line = %q, want %q", lines[3], want)
+	}
+}
+
+// A candidate refused by the ALPN gate reports the port it lost on and how long
+// the handshake took.
+func TestProbeALPNFailureNamesThePortAndTheElapsed(t *testing.T) {
+	tlsPort := sshEcho(t, "SSH-2.0-no-alpn", "", "", true)
+
+	cfg := loopbackConfig(tlsPort, 1)
+	cfg = cfg.resolved()
+
+	var report strings.Builder
+	_, err := probe(context.Background(), cfg, "SSH-2.0-client", &report)
+	if !errors.Is(err, ErrNoServer) {
+		t.Fatalf("probe: got %v, want ErrNoServer", err)
+	}
+
+	want := fmt.Sprintf("  tls %d: negotiated ALPN (none) in ", tlsPort)
+	if !strings.Contains(report.String(), want) {
+		t.Errorf("report = %q, want %q", report.String(), want)
+	}
+	if strings.Contains(report.String(), "localhost:"+strconv.Itoa(tlsPort)) {
+		t.Errorf("report = %q, want the port alone on the candidate line", report.String())
 	}
 }
 
@@ -467,8 +490,8 @@ func TestProbeCloseLineWithoutAHost(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("report = %q, want the cause and the close line", report.String())
 	}
-	if !strings.HasPrefix(lines[0], "sclient: no usable server: lookup does-not-exist.invalid") {
-		t.Errorf("cause line = %q, want the command named before the lookup", lines[0])
+	if lines[0] != "sclient: does-not-exist.invalid: no usable server: no such host" {
+		t.Errorf("cause line = %q, want the command, the name and the cause", lines[0])
 	}
 	want := `sclient: Connection closed by "NO SUCH HOST" port [0]`
 	if lines[1] != want {
