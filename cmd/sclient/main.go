@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	sclient "git.rootprojects.org/root/sclient.go"
+	sclient "github.com/therootcompany/sclient"
 )
 
 var (

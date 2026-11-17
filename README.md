@@ -144,9 +144,9 @@ curl -sS https://webinstall.dev/golang | bash
 Then you can install and run as per usual.
 
 ```bash
-git clone https://git.rootprojects.org/root/sclient.go.git
+git clone https://github.com/therootcompany/sclient.git
 
-pushd sclient.go
+pushd sclient
   go build -o ./dist/sclient ./cmd/sclient/
   sudo rsync -av dist/sclient /usr/local/bin/sclient
 popd
@@ -157,6 +157,6 @@ sclient example.com:443 localhost:3000
 ## Install or Run with Go
 
 ```bash
-go get git.rootprojects.org/root/sclient.go/cmd/sclient
-go run git.rootprojects.org/root/sclient.go/cmd/sclient example.com:443 localhost:3000
+go get github.com/therootcompany/sclient/cmd/sclient
+go run github.com/therootcompany/sclient/cmd/sclient example.com:443 localhost:3000
 ```

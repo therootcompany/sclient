@@ -32,8 +32,8 @@ In the simplest case you'll just be setting a ServerName and connection info:
 
 If you'd like to better understand what sclient does, you can try it out with `go run`:
 
-	go get git.rootprojects.org/root/sclient.go/cmd/sclient
-	go run git.rootprojects.org/root/sclient.go/cmd/sclient example.com:443 localhost:3000
+	go get github.com/therootcompany/sclient/cmd/sclient
+	go run github.com/therootcompany/sclient/cmd/sclient example.com:443 localhost:3000
 	curl http://localhost:3000 -H "Host: example.com"
 
 Pre-built versions for various platforms are also available at
