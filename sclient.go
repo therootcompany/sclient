@@ -174,7 +174,8 @@ func (t *Tunnel) DialAndListen() error {
 	defer ln.Close()
 
 	if !t.Silent {
-		_, _ = fmt.Fprintf(os.Stdout, "[listening] %s <= %s\n", remote, local)
+		// Progress and diagnostics go to stderr: stdout is the payload.
+		_, _ = fmt.Fprintf(os.Stderr, "[listening] %s <= %s\n", remote, local)
 	}
 
 	for {
@@ -275,10 +276,10 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 
 	if !t.Silent {
 		if conn.RemoteAddr().Network() == stdioNetwork {
-			_, _ = fmt.Fprintf(os.Stdout, "(connected to %s and reading from %s)\n",
+			_, _ = fmt.Fprintf(os.Stderr, "(connected to %s and reading from %s)\n",
 				remote, conn.RemoteAddr().String())
 		} else {
-			_, _ = fmt.Fprintf(os.Stdout, "[connect] %s => %s\n",
+			_, _ = fmt.Fprintf(os.Stderr, "[connect] %s => %s\n",
 				displayAddr(conn.RemoteAddr()), remote)
 		}
 	}

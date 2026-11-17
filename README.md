@@ -10,6 +10,8 @@ Unwrap a TLS connection:
 ```bash
 sclient whatever.com:443 localhost:3000
 
+# [listening], [connect], and [verbose] are written to stderr so the
+# connection payload stays clean on stdout
 > [listening] whatever.com:443 <= localhost:3000
 ```
 
