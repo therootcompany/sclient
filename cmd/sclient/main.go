@@ -44,7 +44,6 @@ func main() {
 		if os.Args[1] == "-V" || strings.TrimLeft(os.Args[1], "-") == "version" {
 			fmt.Printf("%s\n", ver())
 			os.Exit(0)
-			return
 		}
 	}
 
@@ -92,7 +91,7 @@ func main() {
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "sclient: %s\n", err)
 		usage()
-		os.Exit(0)
+		os.Exit(2)
 	}
 	sclient.RemoteAddress, sclient.RemotePort = remoteHost, remotePort
 
@@ -105,13 +104,14 @@ func main() {
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "sclient: %s\n", err)
 			usage()
-			os.Exit(0)
+			os.Exit(2)
 		}
 		sclient.LocalAddress, sclient.LocalPort = localHost, localPort
 	}
 
 	if err := sclient.DialAndListen(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "%s\n", err)
+		os.Exit(1)
 	}
 }
 
