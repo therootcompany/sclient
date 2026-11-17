@@ -52,6 +52,7 @@ func main() {
 	var insecure bool
 	var servername string
 	var silent bool
+	var verbose bool
 	var tcpTimeoutSec float64
 	var tlsTimeoutSec float64
 
@@ -63,6 +64,8 @@ func main() {
 	flag.StringVar(&servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
 	flag.BoolVar(&insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
 	flag.BoolVar(&silent, "silent", false, "less verbose output")
+	flag.BoolVar(&verbose, "v", false, "alias for --verbose")
+	flag.BoolVar(&verbose, "verbose", false, "show what each dial negotiated")
 	flag.Float64Var(&tcpTimeoutSec, "tcp-timeout", 0, "seconds for the TCP connect, DNS included. 0 = the default, 5s")
 	flag.Float64Var(&tlsTimeoutSec, "tls-timeout", 0, "seconds for the TLS handshake, measured from the connect. 0 = auto: twice that connect, floor 150ms")
 
@@ -98,6 +101,7 @@ func main() {
 		NextProtos:         alpns,
 		TCPTimeout:         seconds(tcpTimeoutSec),
 		TLSTimeout:         seconds(tlsTimeoutSec),
+		Verbose:            verbose,
 	}
 
 	remoteHost, remotePort, err := remoteAddr(remotestr, 443)

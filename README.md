@@ -71,6 +71,7 @@ sclient [flags] <remote> <local>
 
 - flags
   - `-s`, `--silent` less verbose logging
+  - `-v`, `--verbose` show what each dial negotiated
   - `-k`, `--insecure` ignore invalid TLS (SSL/HTTPS) certificates
   - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
     not use this option)
@@ -101,6 +102,9 @@ sclient [flags] <remote> <local>
   -tls-timeout float
     	seconds for the TLS handshake, measured from the connect (0 = auto:
     	twice that connect, floor 150ms)
+  -v	alias for --verbose
+  -verbose
+    	show what each dial negotiated
 
 # Examples
 

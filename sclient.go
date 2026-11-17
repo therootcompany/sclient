@@ -23,6 +23,7 @@ type Tunnel struct {
 	NextProtos         []string
 	ServerName         string
 	Silent             bool
+	Verbose            bool
 	// TCPTimeout bounds one TCP connect, DNS included. Zero takes the default.
 	TCPTimeout time.Duration
 	// TLSTimeout bounds one TLS handshake, measured from the moment the socket
@@ -56,6 +57,20 @@ func (t *Tunnel) handshakeClock(connect time.Duration) time.Duration {
 		return t.TLSTimeout
 	}
 	return max(handshakeMultiplier*connect, minHandshakeClock)
+}
+
+// reportConnect says what a dial actually negotiated, when the operator asked
+// for more than the bare "connected" line.
+func (t *Tunnel) reportConnect(remote string, conn *tls.Conn, elapsed time.Duration) {
+	if !t.Verbose {
+		return
+	}
+	protocol := "(none)"
+	if p := conn.ConnectionState().NegotiatedProtocol; p != "" {
+		protocol = strconv.Quote(p)
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "[verbose] %s: tls %s, alpn %s, ready in %s\n",
+		remote, conn.RemoteAddr(), protocol, elapsed.Round(10*time.Millisecond))
 }
 
 // dialTLS connects under the connect clock and handshakes under the handshake
@@ -93,11 +108,13 @@ func (t *Tunnel) tlsConfig() *tls.Config {
 // begin listening locally. Each local connection will result in a separate remote connection.
 func (t *Tunnel) DialAndListen() error {
 	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
+	start := time.Now()
 	conn, err := t.dialTLS(remote)
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
+		_, _ = fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
 	} else {
+		t.reportConnect(remote, conn, time.Since(start))
 		_ = conn.Close()
 	}
 
@@ -179,13 +196,15 @@ func pipe(dst io.Writer, src io.Reader, name string) {
 }
 
 func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
+	start := time.Now()
 	sclient, err := t.dialTLS(remote)
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
 		_ = conn.Close()
 		return
 	}
+	t.reportConnect(remote, sclient, time.Since(start))
 
 	if !t.Silent {
 		if conn.RemoteAddr().Network() == "stdio" {
