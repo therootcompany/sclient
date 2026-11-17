@@ -168,6 +168,10 @@ func (t *Tunnel) DialAndListen() error {
 	if err != nil {
 		return err
 	}
+	// The accept loop only exits on an error, so this is the only place the
+	// listener is released; without it the port stays bound until the process
+	// dies.
+	defer ln.Close()
 
 	if !t.Silent {
 		_, _ = fmt.Fprintf(os.Stdout, "[listening] %s:%d <= %s:%d\n",
