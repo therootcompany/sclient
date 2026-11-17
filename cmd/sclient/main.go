@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -87,56 +88,74 @@ func main() {
 		NextProtos:         alpns,
 	}
 
-	remote := strings.Split(remotestr, ":")
-	//remoteAddr, remotePort, err := net.SplitHostPort(remotestr)
-	if len(remote) == 2 {
-		rport, err := strconv.Atoi(remote[1])
-		if err != nil {
-			usage()
-			os.Exit(0)
-		}
-		sclient.RemotePort = rport
-	} else if len(remote) != 1 {
+	remoteHost, remotePort, err := remoteAddr(remotestr, 443)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "sclient: %s\n", err)
 		usage()
 		os.Exit(0)
 	}
-	sclient.RemoteAddress = remote[0]
+	sclient.RemoteAddress, sclient.RemotePort = remoteHost, remotePort
 
 	if localstr == "-" || localstr == "|" {
 		// User may specify stdin/stdout instead of net
 		sclient.LocalAddress = localstr
 		sclient.LocalPort = -1
 	} else {
-		// Test that argument is a local address
-		local := strings.Split(localstr, ":")
-
-		if len(local) == 1 {
-			lport, err := strconv.Atoi(local[0])
-			if err != nil {
-				usage()
-				os.Exit(0)
-			}
-			sclient.LocalPort = lport
-		} else {
-			lport, err := strconv.Atoi(local[1])
-			if err != nil {
-				usage()
-				os.Exit(0)
-			}
-			sclient.LocalAddress = local[0]
-			sclient.LocalPort = lport
+		localHost, localPort, err := localAddr(localstr)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "sclient: %s\n", err)
+			usage()
+			os.Exit(0)
 		}
+		sclient.LocalAddress, sclient.LocalPort = localHost, localPort
 	}
 
-	err := sclient.DialAndListen()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", err)
-		//usage()
-		//os.Exit(6)
+	if err := sclient.DialAndListen(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "%s\n", err)
 	}
 }
 
-// parsers "a,b,c" "a b c" and "a, b, c" all the same
+// localAddr parses the local listen address: a bare number is a port on
+// localhost; host:port (or [ipv6]:port) sets both.
+func localAddr(s string) (string, int, error) {
+	s = strings.TrimSpace(s)
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		p, cerr := strconv.Atoi(s)
+		if cerr != nil || p < 1 || p > 65535 {
+			return "", 0, fmt.Errorf("%q: expected <port> or <host>:<port>", s)
+		}
+		return "localhost", p, nil
+	}
+	p, cerr := strconv.Atoi(port)
+	if cerr != nil || p < 1 || p > 65535 {
+		return "", 0, fmt.Errorf("%q: %q is not a port", s, port)
+	}
+	return host, p, nil
+}
+
+// remoteAddr parses <host>, <host>:<port>, or [ipv6]:<port>; a bare host
+// takes the default port.
+func remoteAddr(s string, defaultPort int) (string, int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", 0, fmt.Errorf("empty address")
+	}
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		if strings.Contains(s, ":") {
+			return "", 0, fmt.Errorf("%q: expected <host> or <host>:<port>", s)
+		}
+		return s, defaultPort, nil
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return "", 0, fmt.Errorf("%q: %q is not a port", s, port)
+	}
+	return host, p, nil
+}
+
+// parseOptionList parses "a,b,c", "a b c", and "a, b, c" the same
 func parseOptionList(optionList string) []string {
 	optionList = strings.TrimSpace(optionList)
 
