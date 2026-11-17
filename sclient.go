@@ -76,7 +76,7 @@ func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 	defer func() { _ = ln.Close() }()
 
 	if !t.Silent {
-		_, _ = fmt.Fprintf(os.Stdout, "[listening] %s:%d <= %s:%d\n",
+		_, _ = fmt.Fprintf(os.Stderr, "[listening] %s:%d <= %s:%d\n",
 			t.RemoteAddress, t.RemotePort, t.LocalAddress, t.LocalPort)
 	}
 
@@ -184,10 +184,10 @@ func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn netRe
 
 	if !t.Silent {
 		if conn.RemoteAddr().Network() == "stdio" {
-			_, _ = fmt.Fprintf(os.Stdout, "(connected to %s:%d and reading from %s)\n",
+			_, _ = fmt.Fprintf(os.Stderr, "(connected to %s:%d and reading from %s)\n",
 				t.RemoteAddress, t.RemotePort, conn.RemoteAddr().String())
 		} else {
-			_, _ = fmt.Fprintf(os.Stdout, "[connect] %s => %s:%d\n",
+			_, _ = fmt.Fprintf(os.Stderr, "[connect] %s => %s:%d\n",
 				strings.Replace(conn.RemoteAddr().String(), "[::1]:", "localhost:", 1), t.RemoteAddress, t.RemotePort)
 		}
 	}

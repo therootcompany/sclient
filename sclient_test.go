@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -236,6 +237,70 @@ func TestDialAndListenListener(t *testing.T) {
 	// The pre-flight probe, then the client.
 	if count := conns.Load(); count != 2 {
 		t.Errorf("listener: the remote saw %d connections, want 2", count)
+	}
+}
+
+// stdout is the payload. The reply is all that arrives there; the progress lines
+// go to stderr, where --stderr can send them.
+func TestStdioKeepsDiagnosticsOffThePayload(t *testing.T) {
+	host, port, shutdown, _ := remoteOf(t)
+	defer shutdown()
+
+	inRead, inWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdio: pipe: %v", err)
+	}
+	payloadRead, payloadWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdio: pipe: %v", err)
+	}
+	diagRead, diagWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr: pipe: %v", err)
+	}
+
+	oldIn, oldOut, oldErr := os.Stdin, os.Stdout, os.Stderr
+	os.Stdin, os.Stdout, os.Stderr = inRead, payloadWrite, diagWrite
+	defer func() { os.Stdin, os.Stdout, os.Stderr = oldIn, oldOut, oldErr }()
+
+	tun := &Tunnel{
+		RemoteAddress:      host,
+		RemotePort:         port,
+		LocalAddress:       "-",
+		InsecureSkipVerify: true,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- tun.DialAndListen() }()
+
+	_, _ = inWrite.Write([]byte(request))
+	_ = inWrite.Close()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("stdio: %v", err)
+		}
+	case <-time.After(noHang):
+		t.Fatal("stdio: the session never ended")
+	}
+
+	_ = payloadWrite.Close()
+	payload, err := io.ReadAll(payloadRead)
+	if err != nil {
+		t.Fatalf("stdio: read payload: %v", err)
+	}
+	if string(payload) != reply {
+		t.Errorf("stdio: the payload was polluted: got %q, want %q", string(payload), reply)
+	}
+
+	_ = diagWrite.Close()
+	diagnostics, err := io.ReadAll(diagRead)
+	if err != nil {
+		t.Fatalf("stdio: read diagnostics: %v", err)
+	}
+	if !strings.Contains(string(diagnostics), "(connected to") {
+		t.Errorf("stdio: the connect line is not on stderr: got %q", string(diagnostics))
 	}
 }
 
