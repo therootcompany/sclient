@@ -161,8 +161,9 @@ func (t *Tunnel) DialAndListen() error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
-			continue
+			// A failing accept never recovers; report it and stop instead of
+			// spinning on the error. main maps it to an exit code.
+			return fmt.Errorf("local listener: %w", err)
 		}
 		go t.handleConnection(remote, conn)
 	}
