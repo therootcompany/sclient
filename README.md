@@ -160,3 +160,10 @@ sclient example.com:443 localhost:3000
 go get github.com/therootcompany/sclient/cmd/sclient
 go run github.com/therootcompany/sclient/cmd/sclient example.com:443 localhost:3000
 ```
+
+# Tests
+
+```bash
+go test ./...                  # unit and integration tests, no network needed
+./tests/smoke.sh example.com   # live smoke test against a real TLS remote
+```
