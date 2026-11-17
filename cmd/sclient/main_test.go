@@ -1,6 +1,25 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"flag"
+	"strings"
+	"testing"
+)
+
+// The version line appears once, whatever stream usage is written to.
+func TestUsagePrintsVersionOnce(t *testing.T) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.Usage = func() { usage(fs) }
+
+	var out bytes.Buffer
+	fs.SetOutput(&out)
+	fs.Usage()
+
+	if got := strings.Count(out.String(), version); got != 1 {
+		t.Errorf("usage printed the version %d times, want 1", got)
+	}
+}
 
 // The defaults and rejections the parsers own.
 func TestRemoteAddr(t *testing.T) {
@@ -13,7 +32,7 @@ func TestRemoteAddr(t *testing.T) {
 		{"example.com", "example.com", 443, false}, // a bare host takes the default port
 		{"[::1]", "::1", 443, false},               // bracketed IPv6, no port
 		{" example.com ", "example.com", 443, false},
-		{"::1", "", 0, true},             // ambiguous: "::1:443" is an IPv6 address
+		{"::1", "", 0, true}, // ambiguous: "::1:443" is an IPv6 address
 		{"2001:db8::1:443", "", 0, true},
 		{"example.com:99999", "", 0, true},
 		{"example.com:0", "", 0, true},

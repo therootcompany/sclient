@@ -43,13 +43,15 @@ func tlsServer(t *testing.T) (string, func(), *atomic.Int32) {
 		t.Fatalf("tls server: key: %v", err)
 	}
 
-	notBefore, notAfter := time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
+	notBefore := time.Now().Add(-time.Hour)
+	notAfter := time.Now().Add(time.Hour)
 	template := x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
+		IPAddresses:           []net.IP{{127, 0, 0, 1}}, // the remote is an IP
 	}
 	der, err := x509.CreateCertificate(rand.Reader, &template, &template, key.Public(), key)
 	if err != nil {
@@ -101,6 +103,7 @@ func remoteOf(t *testing.T) (string, int, func(), *atomic.Int32) {
 	return host, port, shutdown, conns
 }
 
+// The name defaults to the remote address. Go sends no SNI for an IP.
 func TestTLSConfigServerName(t *testing.T) {
 	cases := []struct {
 		remote     string
@@ -109,8 +112,9 @@ func TestTLSConfigServerName(t *testing.T) {
 	}{
 		{"example.com", "", "example.com"}, // the documented default
 		{"example.com", "other.example.net", "other.example.net"},
-		{"192.0.2.1", "", ""},                       // no SNI for an IP
+		{"192.0.2.1", "", "192.0.2.1"},              // the IP is the name
 		{"192.0.2.1", "example.com", "example.com"}, // unless it is named
+		{"2001:db8::1", "", "2001:db8::1"},          // IPv6 too
 		{"", "", ""},
 	}
 	for _, c := range cases {
@@ -120,6 +124,31 @@ func TestTLSConfigServerName(t *testing.T) {
 				c.remote, c.servername, got, c.want)
 		}
 	}
+}
+
+// An IP remote is its own name.
+func TestDialIPRemoteNamesItself(t *testing.T) {
+	host, port, shutdown, _ := remoteOf(t)
+	defer shutdown()
+
+	tun := &Tunnel{RemoteAddress: host, RemotePort: port}
+	_, err := tun.dial(context.Background(), net.JoinHostPort(host, strconv.Itoa(port)))
+	if err == nil {
+		t.Fatalf("dial %s: the untrusted certificate was accepted", host)
+	}
+	if strings.Contains(err.Error(), "ServerName or InsecureSkipVerify") {
+		t.Errorf("dial %s: the address was not used as the name: %v", host, err)
+	}
+	if !strings.Contains(err.Error(), "unknown authority") {
+		t.Errorf("dial %s: want a chain error, got %v", host, err)
+	}
+
+	insecure := &Tunnel{RemoteAddress: host, RemotePort: port, InsecureSkipVerify: true}
+	conn, err := insecure.dial(context.Background(), net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("dial -k %s: %v", host, err)
+	}
+	_ = conn.Close()
 }
 
 func TestPipeEndsBothStreams(t *testing.T) {
@@ -165,9 +194,14 @@ func TestDialAndListenStdio(t *testing.T) {
 		t.Fatalf("stdio: pipe: %v", err)
 	}
 
-	oldIn, oldOut := os.Stdin, os.Stdout
-	os.Stdin, os.Stdout = inRead, outWrite
-	defer func() { os.Stdin, os.Stdout = oldIn, oldOut }()
+	oldIn := os.Stdin
+	oldOut := os.Stdout
+	os.Stdin = inRead
+	os.Stdout = outWrite
+	defer func() {
+		os.Stdin = oldIn
+		os.Stdout = oldOut
+	}()
 
 	_, _ = inWrite.Write([]byte(request))
 	_ = inWrite.Close()
@@ -282,9 +316,17 @@ func TestStdioKeepsDiagnosticsOffThePayload(t *testing.T) {
 		t.Fatalf("stderr: pipe: %v", err)
 	}
 
-	oldIn, oldOut, oldErr := os.Stdin, os.Stdout, os.Stderr
-	os.Stdin, os.Stdout, os.Stderr = inRead, payloadWrite, diagWrite
-	defer func() { os.Stdin, os.Stdout, os.Stderr = oldIn, oldOut, oldErr }()
+	oldIn := os.Stdin
+	oldOut := os.Stdout
+	oldErr := os.Stderr
+	os.Stdin = inRead
+	os.Stdout = payloadWrite
+	os.Stderr = diagWrite
+	defer func() {
+		os.Stdin = oldIn
+		os.Stdout = oldOut
+		os.Stderr = oldErr
+	}()
 
 	tun := &Tunnel{
 		RemoteAddress:      host,

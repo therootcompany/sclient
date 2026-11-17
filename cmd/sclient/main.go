@@ -5,9 +5,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,118 +18,184 @@ import (
 	"github.com/therootcompany/sclient"
 )
 
+const name = "sclient"
+
 const (
 	defaultRemotePort = 443
 	defaultLocalHost  = "localhost"
 )
 
+// Stamped by goreleaser at release time (-Dmain.version, -Dmain.commit,
+// -Dmain.date); init() fills in what is left unset for go run and go build.
 var (
-	// commit refers to the abbreviated commit hash
-	commit = "0000000"
-	// version refers to the most recent tag, plus any commits made since then
-	version = "v0.0.0-pre0+0000000"
-	// GitTimestamp refers to the timestamp of the most recent commit
-	date = "0000-00-00T00:00:00+0000"
+	version = ""
+	commit  = ""
+	date    = ""
 )
 
-func ver() string {
-	return fmt.Sprintf("sclient %s (%s) %s", version, commit[:7], date)
+type MainConfig struct {
+	alpn       string
+	insecure   bool
+	servername string
+	silent     bool
+	stderr     string
+	tcpTimeout float64
+	tlsTimeout float64
+	remote     string
+	local      string
 }
 
-func usage() {
-	fmt.Fprintf(os.Stderr, "\n%s\n"+
-		"\nusage: sclient <remote> <local>\n"+
-		"\n"+
-		"   ex: sclient example.com 3000\n"+
-		"      (sclient example.com:443 localhost:3000)\n"+
-		"\n"+
-		"   ex: sclient example.com:8443 0.0.0.0:4080\n"+
-		"\n"+
-		"   ex: sclient example.com:443 -\n"+
-		"\n", ver())
-	flag.PrintDefaults()
-	fmt.Println()
+func shortCommit(c string) string {
+	return c[:min(len(c), 7)]
+}
+
+func printVersion(w io.Writer) {
+	_, _ = fmt.Fprintf(w, "%s %s (%s) %s\n", name, version, commit, date)
+}
+
+// buildSetting returns one VCS setting, or "" when the binary has none.
+func buildSetting(settings []debug.BuildSetting, key string) string {
+	for _, setting := range settings {
+		if setting.Key == key {
+			return setting.Value
+		}
+	}
+	return ""
+}
+
+func init() {
+	// ldflags win; ReadBuildInfo is the fallback for go run and plain go build.
+	if version == "" || commit == "" || date == "" {
+		if bi, ok := debug.ReadBuildInfo(); ok {
+			if version == "" && bi.Main.Version != "devel" {
+				version = bi.Main.Version
+			}
+			if commit == "" {
+				commit = buildSetting(bi.Settings, "vcs.revision")
+			}
+			if date == "" {
+				date = buildSetting(bi.Settings, "vcs.time")
+			}
+		}
+	}
+
+	version = strings.TrimPrefix(version, "v")
+	if version == "" {
+		version = "dev"
+	}
+	if commit == "" {
+		commit = "0000000"
+	}
+	if date == "" {
+		date = "0001-01-01"
+	}
+	commit = shortCommit(commit)
+	if when, err := time.Parse(time.RFC3339, date); err == nil {
+		date = when.Format(time.DateOnly)
+	}
+}
+
+func usage(fs *flag.FlagSet) {
+	w := fs.Output()
+	printVersion(w)
+	_, _ = fmt.Fprintf(w, "\nUSAGE: %s [flags] <remote> <local>\n", name)
+	_, _ = fmt.Fprintf(w, "\n   ex: %s example.com 3000\n", name)
+	_, _ = fmt.Fprintf(w, "      (example.com:443 <= localhost:3000)\n")
+	_, _ = fmt.Fprintf(w, "\n   ex: %s example.com:8443 0.0.0.0:4080\n", name)
+	_, _ = fmt.Fprintf(w, "\n   ex: %s example.com:443 -\n", name)
+	_, _ = fmt.Fprintf(w, "\nFLAGS\n")
+	fs.PrintDefaults()
+	_, _ = fmt.Fprintln(w)
+}
+
+// failUsage reports a usage error and exits 2.
+func failUsage(fs *flag.FlagSet, msg string) {
+	_, _ = fmt.Fprintf(os.Stderr, "%s: %s\n", name, msg)
+	fs.Usage()
+	os.Exit(2)
 }
 
 func main() {
-	if len(os.Args) >= 2 {
-		if os.Args[1] == "-V" || strings.TrimLeft(os.Args[1], "-") == "version" {
-			fmt.Printf("%s\n", ver())
+	cfg := MainConfig{}
+
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.StringVar(&cfg.alpn, "alpn", "", "acceptable protocols, ex: 'h2,http/1.1' 'http/1.1' 'ssh'")
+	fs.BoolVar(&cfg.insecure, "k", false, "alias for --insecure")
+	fs.BoolVar(&cfg.silent, "s", false, "alias of --silent")
+	fs.StringVar(&cfg.servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
+	fs.BoolVar(&cfg.insecure, "insecure", false, "ignore bad TLS (SSL/HTTPS) certificates")
+	fs.BoolVar(&cfg.silent, "silent", false, "less verbose output")
+	fs.StringVar(&cfg.stderr, "stderr", "", "where diagnostics go, ex sclient.log or /dev/null")
+	fs.Float64Var(&cfg.tcpTimeout, "tcp-timeout", 0, "seconds for the TCP connect, DNS included (0 = default, 5s)")
+	fs.Float64Var(&cfg.tlsTimeout, "tls-timeout", 0, "seconds for the TLS handshake (0 = auto, 3x the connect)")
+	fs.Usage = func() { usage(fs) }
+
+	// Before parsing: -V and help survive junk arguments.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-V", "-version", "--version", "version":
+			printVersion(os.Stdout)
 			os.Exit(0)
-			return
+		case "help", "-help", "--help":
+			fs.SetOutput(os.Stdout)
+			fs.Usage()
+			os.Exit(0)
 		}
 	}
 
-	var alpnList string
-	var insecure bool
-	var servername string
-	var silent bool
-	var stderrPath string
-	var tcpTimeout float64
-	var tlsTimeout float64
-
-	flag.Usage = usage
-
-	flag.StringVar(&alpnList, "alpn", "", "acceptable protocols, ex: 'h2,http/1.1' 'http/1.1' 'ssh'")
-	flag.BoolVar(&insecure, "k", false, "alias for --insecure")
-	flag.BoolVar(&silent, "s", false, "alias of --silent")
-	flag.StringVar(&servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
-	flag.BoolVar(&insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
-	flag.BoolVar(&silent, "silent", false, "less verbose output")
-	flag.StringVar(&stderrPath, "stderr", "", "a file or device, ex sclient.log or /dev/null")
-	flag.Float64Var(&tcpTimeout, "tcp-timeout", 0, "seconds for the TCP connect, DNS included (0 = default, 5s)")
-	flag.Float64Var(&tlsTimeout, "tls-timeout", 0, "seconds for the TLS handshake, from the connect (0 = auto, 3x connection time)")
-
-	flag.Parse()
-
-	alpns := parseOptionList(alpnList)
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		os.Exit(2) // flag printed the error and the usage
+	}
 
 	// stdout is the payload; --stderr says where the rest goes.
-	os.Stderr = stderrTarget(stderrPath)
+	os.Stderr = stderrTarget(cfg.stderr)
 
-	remotestr := flag.Arg(0)
-	localstr := flag.Arg(1)
-
-	i := flag.NArg()
-	if i != 2 {
+	switch args := fs.Args(); len(args) {
+	case 2:
+		cfg.remote = args[0]
+		cfg.local = args[1]
+	case 1:
 		// We may omit the second argument if we're going straight to stdin
-		if stat, _ := os.Stdin.Stat(); i == 1 && (stat.Mode()&os.ModeCharDevice) == 0 {
-			localstr = "|"
+		if stat, _ := os.Stdin.Stat(); stat.Mode()&os.ModeCharDevice == 0 {
+			cfg.remote = args[0]
+			cfg.local = "|"
 		} else {
-			usage()
-			os.Exit(1)
+			failUsage(fs, "want <remote> <local>")
 		}
+	default:
+		failUsage(fs, "want <remote> <local>")
 	}
 
 	tun := &sclient.Tunnel{
-		InsecureSkipVerify: insecure,
-		ServerName:         servername,
-		Silent:             silent,
-		NextProtos:         alpns,
-		TCPTimeout:         toSeconds(tcpTimeout),
-		TLSTimeout:         toSeconds(tlsTimeout),
+		InsecureSkipVerify: cfg.insecure,
+		ServerName:         cfg.servername,
+		Silent:             cfg.silent,
+		NextProtos:         parseOptionList(cfg.alpn),
+		TCPTimeout:         toSeconds(cfg.tcpTimeout),
+		TLSTimeout:         toSeconds(cfg.tlsTimeout),
 	}
 
-	remoteHost, remotePort, err := remoteAddr(remotestr)
+	remoteHost, remotePort, err := remoteAddr(cfg.remote)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "sclient: remote: %s\n", err)
-		usage()
-		os.Exit(1)
+		failUsage(fs, "remote: "+err.Error())
 	}
-	tun.RemoteAddress, tun.RemotePort = remoteHost, remotePort
+	tun.RemoteAddress = remoteHost
+	tun.RemotePort = remotePort
 
-	if localstr == "-" || localstr == "|" {
+	if cfg.local == "-" || cfg.local == "|" {
 		// User may specify stdin/stdout instead of net
-		tun.LocalAddress = localstr
+		tun.LocalAddress = cfg.local
 		tun.LocalPort = -1
 	} else {
-		localHost, localPort, err := localAddr(localstr)
+		localHost, localPort, err := localAddr(cfg.local)
 		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "sclient: local: %s\n", err)
-			usage()
-			os.Exit(1)
+			failUsage(fs, "local: "+err.Error())
 		}
-		tun.LocalAddress, tun.LocalPort = localHost, localPort
+		tun.LocalAddress = localHost
+		tun.LocalPort = localPort
 	}
 
 	// SIGINT or SIGTERM cancels ctx, which stops the tunnel.
@@ -136,8 +204,7 @@ func main() {
 
 	if err := tun.DialAndListenContext(ctx); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "%s\n", err)
-		//usage()
-		//os.Exit(6)
+		os.Exit(1)
 	}
 }
 

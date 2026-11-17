@@ -72,7 +72,8 @@ sclient [flags] <remote> <local>
 - flags
   - `-s`, `--silent` less verbose logging
   - `-k`, `--insecure` ignore invalid TLS (SSL/HTTPS) certificates
-  - `--servername <domain>` force SNI (default is the domain, or none for IP or '')
+  - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
+    not use this option)
   - `--alpn <protocol-list>` acceptable protocols, ex: `h2,http/1.1` `ssh`
   - `--stderr <path>` a file or device, ex `sclient.log`, `/dev/tty`, `/dev/null`
   - `--tcp-timeout <seconds>` seconds for the TCP connect, DNS included
@@ -80,7 +81,7 @@ sclient [flags] <remote> <local>
   - `--tls-timeout <seconds>` seconds for the TLS handshake, from the connect
     (0 = auto, 3x connection time)
 - remote
-  - must have servername (i.e. example.com)
+  - a hostname or an IP
   - port is optional (default is 443)
 - local
   - address is optional (default is localhost)
@@ -104,6 +105,15 @@ Ignore a bad TLS/SSL/HTTPS certificate and connect anyway.
 
 ```bash
 sclient -k badtls.telebit.cloud:443 localhost:3000
+```
+
+Connect to an IP. The certificate must have that IP, or name it, or skip
+verification.
+
+```bash
+sclient 203.0.113.1:443 localhost:3000
+sclient --servername telebit.cloud 203.0.113.1:443 localhost:3000
+sclient -k 203.0.113.1:443 localhost:3000
 ```
 
 Reading from stdin

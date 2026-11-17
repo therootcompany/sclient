@@ -27,9 +27,11 @@ type Tunnel struct {
 	TLSTimeout         time.Duration
 }
 
+// tlsConfig is the client config for one dial. The name defaults to the remote
+// address. Go sends no SNI for an IP, but still checks it against the cert.
 func (t *Tunnel) tlsConfig() *tls.Config {
 	serverName := t.ServerName
-	if serverName == "" && net.ParseIP(t.RemoteAddress) == nil { // an IP has no name
+	if serverName == "" {
 		serverName = t.RemoteAddress
 	}
 	return &tls.Config{
