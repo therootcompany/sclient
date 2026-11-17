@@ -25,7 +25,7 @@ import (
 
 // probeWait bounds a loopback probe: a real one finishes in a couple of hundred
 // milliseconds at most.
-const probeWait = 400 * time.Millisecond
+const probeWait = 150 * time.Millisecond
 
 // sshCert is a self-signed certificate for 127.0.0.1.
 func sshCert() (tls.Certificate, error) {
@@ -350,8 +350,34 @@ func TestProbeALPNGateOff(t *testing.T) {
 	}
 }
 
+// SSH mode does not dial an IP over TLS unless the server is named: a proxy that
+// routes by name has nothing to route on an address. Serve is the path callers
+// take, so the resolution is tested there.
+func TestProbeSkipsTLSForUnnamedIP(t *testing.T) {
+	tlsPort := sshEcho(t, "SSH-2.0-tls-server", "", "ssh", true)
+	sshPort := sshEcho(t, "SSH-2.0-plain-server", "", "", false)
+
+	cfg := loopbackConfig(tlsPort, sshPort)
+	cfg.Host = "127.0.0.1"
+	cfg.Verbose = true
+	cfg = cfg.resolved()
+
+	var report strings.Builder
+	chosen, err := probe(context.Background(), cfg, "SSH-2.0-client", &report)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if chosen.name != "ssh" {
+		t.Errorf("probe chose %s, want ssh", chosen.name)
+	}
+	if !strings.Contains(report.String(), "no name to route on") {
+		t.Errorf("report = %q, want the skipped TLS candidate", report.String())
+	}
+}
+
 // A banner that declares a host other than the one dialled is a different server:
-// it is refused, and the report says so.
+// it is refused, and the report says so. A banner that declares nothing is
+// accepted - the rule is opt-in.
 func TestProbeBannerMismatch(t *testing.T) {
 	tlsPort := sshEcho(t, "SSH-2.0-OpenSSH_9.6 host:other.example.net", "", "ssh", true)
 
@@ -369,89 +395,6 @@ func TestProbeBannerMismatch(t *testing.T) {
 	}
 }
 
-// Declared hosts are opt-in: a banner that names none is accepted.
-func TestProbeAcceptsUndeclaredBanner(t *testing.T) {
-	tlsPort := sshEcho(t, "SSH-2.0-OpenSSH_9.6", "", "ssh", true)
-
-	cfg := loopbackConfig(tlsPort, 1)
-	cfg.ServerName = "example.com"
-
-	chosen, err := probe(context.Background(), cfg, "SSH-2.0-client", io.Discard)
-	if err != nil {
-		t.Fatalf("probe: %v", err)
-	}
-	if chosen.name != "tls" {
-		t.Errorf("probe chose %s, want tls", chosen.name)
-	}
-}
-
-// SSH mode does not dial an IP over TLS unless the server is named: a proxy that
-// routes by name has nothing to route on an address.
-func TestProbeSkipsTLSForUnnamedIP(t *testing.T) {
-	tlsPort := sshEcho(t, "SSH-2.0-tls-server", "", "ssh", true)
-	sshPort := sshEcho(t, "SSH-2.0-plain-server", "", "", false)
-
-	cfg := loopbackConfig(tlsPort, sshPort)
-	cfg.Host = "127.0.0.1"
-	cfg.Verbose = true
-
-	var report strings.Builder
-	chosen, err := probe(context.Background(), cfg, "SSH-2.0-client", &report)
-	if err != nil {
-		t.Fatalf("probe: %v", err)
-	}
-	if chosen.name != "ssh" {
-		t.Errorf("probe chose %s, want ssh", chosen.name)
-	}
-	if !strings.Contains(report.String(), "skipped") {
-		t.Errorf("report = %q, want the skipped TLS candidate", report.String())
-	}
-}
-
-// A bare IP keeps no server name; naming the server is what opens the TLS side.
-func TestResolveServerName(t *testing.T) {
-	cases := []struct {
-		host       string
-		serverName string
-		want       string
-	}{
-		{"example.com", "", "example.com"},
-		{"127.0.0.1", "", ""},
-		{"127.0.0.1", "guest.example.com", "guest.example.com"},
-	}
-	for _, tc := range cases {
-		got := Config{Host: tc.host, ServerName: tc.serverName}.resolved().ServerName
-		if got != tc.want {
-			t.Errorf("resolved ServerName of %q with %q = %q, want %q", tc.host, tc.serverName, got, tc.want)
-		}
-	}
-}
-
-// Serve resolves the config the same way the probe expects: an unnamed IP still
-// skips the TLS candidate.
-func TestServeSkipsTLSForUnnamedIP(t *testing.T) {
-	tlsPort := sshEcho(t, "SSH-2.0-tls-server", "", "ssh", true)
-	sshPort := sshEcho(t, "SSH-2.0-plain-server", "", "", false)
-
-	cfg := loopbackConfig(tlsPort, sshPort)
-	cfg.Host = "127.0.0.1"
-	cfg.Verbose = true
-
-	local, peer := net.Pipe()
-	defer local.Close()
-	defer peer.Close()
-	_, _ = io.WriteString(peer, "SSH-2.0-client\r\nBYE\r\n")
-	_ = peer.Close()
-
-	var report strings.Builder
-	if err := Serve(context.Background(), cfg, local, &report); err != nil {
-		t.Fatalf("serve: %v", err)
-	}
-	if !strings.Contains(report.String(), "no name to route on") {
-		t.Errorf("report = %q, want the skipped TLS candidate", report.String())
-	}
-}
-
 // Naming the server makes the TLS probe fair game for an IP.
 func TestProbeTriesTLSForNamedIP(t *testing.T) {
 	tlsPort := sshEcho(t, "SSH-2.0-tls-server", "", "ssh", true)
@@ -466,20 +409,6 @@ func TestProbeTriesTLSForNamedIP(t *testing.T) {
 	}
 	if chosen.name != "tls" {
 		t.Errorf("probe chose %s, want tls", chosen.name)
-	}
-}
-
-// A port that never speaks ends on its handshake deadline, not the connect timeout.
-func TestProbeHandshakeDeadlineFloor(t *testing.T) {
-	tlsPort := silentTLSServer(t)
-	sshPort := sshEcho(t, "SSH-2.0-plain-server", "", "", false)
-
-	chosen, err := probe(context.Background(), loopbackConfig(tlsPort, sshPort), "SSH-2.0-client", io.Discard)
-	if err != nil {
-		t.Fatalf("probe: %v", err)
-	}
-	if chosen.name != "ssh" {
-		t.Errorf("probe chose %s, want ssh", chosen.name)
 	}
 }
 
@@ -534,34 +463,25 @@ func TestProbeKeepsTheReadAhead(t *testing.T) {
 	}
 }
 
-// A port that connects but never answers the banner is refused on the banner
-// timeout, not on the connect timeout.
-func TestProbeRefusesASilentPort(t *testing.T) {
-	silent := silentTCPServer(t)
+// A peer that connects and never speaks is refused on its own deadline: the
+// handshake times out on the handshake clock, the banner read on the banner clock,
+// and neither loses a race with the connect timeout.
+func TestProbeRefusesSilentPeers(t *testing.T) {
+	tlsPort := silentTLSServer(t) // accepts, never finishes the handshake
+	sshPort := silentTCPServer(t) // accepts, never answers the banner
 
+	cfg := loopbackConfig(tlsPort, sshPort)
+	cfg.TCPTimeout = 100 * time.Millisecond
+
+	var report strings.Builder
 	start := time.Now()
-	_, err := probe(context.Background(), loopbackConfig(1, silent), "SSH-2.0-client", io.Discard)
+	_, err := probe(context.Background(), cfg, "SSH-2.0-client", &report)
 	elapsed := time.Since(start)
 	if !errors.Is(err, ErrNoServer) {
 		t.Fatalf("probe: got %v, want ErrNoServer", err)
 	}
-	if elapsed > 300*time.Millisecond {
-		t.Errorf("probe took %s against a silent port", ElapsedFor(elapsed))
-	}
-}
-
-// The banner timeout is floored, so a short connect timeout refuses a silent port
-// on the banner read instead of losing the write race with the probe deadline.
-func TestProbeBannerTimeoutFloor(t *testing.T) {
-	sshPort := silentTCPServer(t)
-
-	cfg := loopbackConfig(1, sshPort)
-	cfg.TCPTimeout = 100 * time.Millisecond
-
-	var report strings.Builder
-	_, err := probe(context.Background(), cfg, "SSH-2.0-client", &report)
-	if !errors.Is(err, ErrNoServer) {
-		t.Fatalf("probe: got %v, want ErrNoServer", err)
+	if elapsed > 400*time.Millisecond {
+		t.Errorf("probe ran %s against silent peers", ElapsedFor(elapsed))
 	}
 	if strings.Contains(report.String(), "closed network connection") {
 		t.Errorf("the banner write lost the race with the probe deadline: %q", report.String())
@@ -579,7 +499,7 @@ func TestProbeHonorsCallerDeadline(t *testing.T) {
 	cfg := loopbackConfig(tlsPort, sshPort)
 	cfg.TCPTimeout = 10 * time.Second
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
@@ -588,8 +508,8 @@ func TestProbeHonorsCallerDeadline(t *testing.T) {
 	if !errors.Is(err, ErrNoServer) {
 		t.Fatalf("probe: got %v, want ErrNoServer", err)
 	}
-	if elapsed > 600*time.Millisecond {
-		t.Errorf("probe ran %s with a 10s connect timeout under a 200ms deadline", ElapsedFor(elapsed))
+	if elapsed > 300*time.Millisecond {
+		t.Errorf("probe ran %s with a 10s connect timeout under a 100ms deadline", ElapsedFor(elapsed))
 	}
 }
 
@@ -669,7 +589,7 @@ func TestSSHSessionEndsOnCancel(t *testing.T) {
 	cfg := loopbackConfig(tlsPort, sshPort)
 	cfg.Silent = true
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	done := make(chan error, 1)

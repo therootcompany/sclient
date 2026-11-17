@@ -29,8 +29,8 @@ const (
 	// about 10ms, so this is a hang detector, not a performance budget.
 	noHang = 100 * time.Millisecond
 	// How long the tunnel is allowed to take to bind its local listener.
-	bindWait  = 2 * time.Millisecond
-	bindTries = 50
+	bindWait  = 1 * time.Millisecond
+	bindTries = 40
 )
 
 // tlsServer starts a TLS server on 127.0.0.1 that reads a request to EOF before
@@ -504,7 +504,7 @@ func TestIPv6LocalAddress(t *testing.T) {
 		InsecureSkipVerify: true,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- tun.DialAndListenContext(ctx) }()

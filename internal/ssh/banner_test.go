@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+// A banner is one line, capped at the RFC length, and must start with "SSH-".
+// Bytes past the terminator stay in the reader for the caller to relay.
 func TestReadBanner(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -17,58 +19,35 @@ func TestReadBanner(t *testing.T) {
 	}{
 		{"crlf", "SSH-2.0-OpenSSH_10.5\r\n", "SSH-2.0-OpenSSH_10.5"},
 		{"lf", "SSH-2.0-OpenSSH_10.5\n", "SSH-2.0-OpenSSH_10.5"},
+		{"not ssh", "HTTP/1.1 200 OK\r\n", ""},
+		{"256 bytes", "SSH-" + strings.Repeat("x", 253) + "\r\n", ""},
+		// no newline at all: bounded by the RFC limit, not by the buffer
+		{"never terminates", "SSH-" + strings.Repeat("x", 4096), ""},
+		{"read-ahead", "SSH-2.0-x\r\nKEXINIT-PAYLOAD", "SSH-2.0-x"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			r := bufio.NewReader(strings.NewReader(tc.input))
 			banner, err := readBanner(r)
+			if tc.want == "" {
+				if err == nil {
+					t.Errorf("readBanner(%q) = %q, want an error", tc.input, banner)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("readBanner: %v", err)
 			}
 			if banner != tc.want {
 				t.Errorf("banner = %q, want %q", banner, tc.want)
 			}
+			if tc.name == "read-ahead" {
+				rest, err := io.ReadAll(r)
+				if err != nil || string(rest) != "KEXINIT-PAYLOAD" {
+					t.Errorf("read-ahead = %q, want the bytes glued to the banner", string(rest))
+				}
+			}
 		})
-	}
-}
-
-func TestReadBannerTooLong(t *testing.T) {
-	r := bufio.NewReader(strings.NewReader("SSH-" + strings.Repeat("x", 253) + "\r\n"))
-	if _, err := readBanner(r); err == nil {
-		t.Fatal("expected error for 256-byte banner")
-	}
-}
-
-// A peer that never sends a newline hits the RFC limit rather than
-// buffering forever: the read is bounded, not just the result checked.
-func TestReadBannerBounded(t *testing.T) {
-	r := bufio.NewReader(strings.NewReader("SSH-" + strings.Repeat("x", 4096)))
-	if _, err := readBanner(r); err == nil {
-		t.Fatal("expected a too-long error for a newline-less banner")
-	}
-}
-
-func TestReadBannerNotSSH(t *testing.T) {
-	r := bufio.NewReader(strings.NewReader("HTTP/1.1 200 OK\r\n"))
-	if _, err := readBanner(r); err == nil {
-		t.Fatal("expected error for non-SSH banner")
-	}
-}
-
-// Bytes arriving in the same segment as the banner (a glued KEXINIT) must
-// survive in the reader for the caller to relay.
-func TestReadBannerReadAhead(t *testing.T) {
-	const kex = "KEXINIT-PAYLOAD"
-	r := bufio.NewReader(strings.NewReader("SSH-2.0-x\r\n" + kex))
-	if _, err := readBanner(r); err != nil {
-		t.Fatalf("readBanner: %v", err)
-	}
-	rest, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read rest: %v", err)
-	}
-	if string(rest) != kex {
-		t.Errorf("read-ahead = %q, want %q", rest, kex)
 	}
 }
 
