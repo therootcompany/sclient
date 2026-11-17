@@ -75,6 +75,10 @@ sclient [flags] <remote> <local>
   - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
     not use this option)
   - `--alpn <protocol-list>`
+  - `--tcp-timeout <seconds>` deadline for the TCP connect, DNS included.
+    Default 5; `0` means "the default", not "unlimited"
+  - `--tls-timeout <seconds>` deadline for the TLS handshake, measured from the
+    connect. `0` (default) is auto: twice that connect, floored at 150 ms
 - remote
   - must have servername (i.e. example.com)
   - port is optional (default is 443)
@@ -92,6 +96,11 @@ sclient [flags] <remote> <local>
     	specify a servername different from <remote> (to disable SNI use an IP as <remote> and do use this option)
   -silent
     	less verbose output
+  -tcp-timeout float
+    	seconds for the TCP connect, DNS included (0 = the default, 5s)
+  -tls-timeout float
+    	seconds for the TLS handshake, measured from the connect (0 = auto:
+    	twice that connect, floor 150ms)
 
 # Examples
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	sclient "git.rootprojects.org/root/sclient.go"
 )
@@ -51,6 +52,8 @@ func main() {
 	var insecure bool
 	var servername string
 	var silent bool
+	var tcpTimeoutSec float64
+	var tlsTimeoutSec float64
 
 	flag.Usage = usage
 
@@ -60,8 +63,16 @@ func main() {
 	flag.StringVar(&servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
 	flag.BoolVar(&insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
 	flag.BoolVar(&silent, "silent", false, "less verbose output")
+	flag.Float64Var(&tcpTimeoutSec, "tcp-timeout", 0, "seconds for the TCP connect, DNS included. 0 = the default, 5s")
+	flag.Float64Var(&tlsTimeoutSec, "tls-timeout", 0, "seconds for the TLS handshake, measured from the connect. 0 = auto: twice that connect, floor 150ms")
 
 	flag.Parse()
+
+	if tcpTimeoutSec < 0 || tlsTimeoutSec < 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "sclient: timeouts must be 0 (the default) or a positive number of seconds\n")
+		usage()
+		os.Exit(2)
+	}
 
 	alpns := parseOptionList(alpnList)
 	remotestr := flag.Arg(0)
@@ -85,6 +96,8 @@ func main() {
 		ServerName:         servername,
 		Silent:             silent,
 		NextProtos:         alpns,
+		TCPTimeout:         seconds(tcpTimeoutSec),
+		TLSTimeout:         seconds(tlsTimeoutSec),
 	}
 
 	remoteHost, remotePort, err := remoteAddr(remotestr, 443)
@@ -132,6 +145,15 @@ func localAddr(s string) (string, int, error) {
 		return "", 0, fmt.Errorf("%q: %q is not a port", s, port)
 	}
 	return host, p, nil
+}
+
+// seconds turns a flag value into a duration; a non-positive value leaves the
+// field at zero, which the engine reads as "use the default".
+func seconds(raw float64) time.Duration {
+	if raw <= 0 {
+		return 0
+	}
+	return time.Duration(raw * float64(time.Second))
 }
 
 // remoteAddr parses <host>, <host>:<port>, or [ipv6]:<port>; a bare host

@@ -1,6 +1,7 @@
 package sclient
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Tunnel specifies which remote encrypted connection to make available as a plain connection locally.
@@ -21,6 +23,61 @@ type Tunnel struct {
 	NextProtos         []string
 	ServerName         string
 	Silent             bool
+	// TCPTimeout bounds one TCP connect, DNS included. Zero takes the default.
+	TCPTimeout time.Duration
+	// TLSTimeout bounds one TLS handshake, measured from the moment the socket
+	// connects. Zero - the default - is auto: twice that connect, floored at
+	// 150ms. Name it only for a front that issues a certificate on first use.
+	TLSTimeout time.Duration
+}
+
+// The engine clocks: a connect that is not quick is dead; a handshake gets
+// twice the connect that just happened (measured 0.5-1.4x on public fronts).
+const (
+	defaultTCPTimeout   = 5 * time.Second
+	minHandshakeClock   = 150 * time.Millisecond
+	handshakeMultiplier = 2
+)
+
+// connectClock is the TCP deadline: the operator's clock, or the default.
+func (t *Tunnel) connectClock() time.Duration {
+	if t.TCPTimeout > 0 {
+		return t.TCPTimeout
+	}
+	return defaultTCPTimeout
+}
+
+// handshakeClock bounds one TLS handshake. An explicit --tls-timeout wins;
+// zero is auto - twice the connect that just happened, with a floor so a
+// sub-millisecond loopback connect does not strangle a real handshake. There
+// is no unlimited mode: every dial has a deadline.
+func (t *Tunnel) handshakeClock(connect time.Duration) time.Duration {
+	if t.TLSTimeout > 0 {
+		return t.TLSTimeout
+	}
+	return max(handshakeMultiplier*connect, minHandshakeClock)
+}
+
+// dialTLS connects under the connect clock and handshakes under the handshake
+// clock. The returned connection is ready to communicate.
+func (t *Tunnel) dialTLS(remote string) (*tls.Conn, error) {
+	connect := t.connectClock()
+	ctx, cancel := context.WithTimeout(context.Background(), connect+t.handshakeClock(connect))
+	defer cancel()
+	d := &net.Dialer{Timeout: connect, KeepAlive: 30 * time.Second}
+	start := time.Now()
+	conn, err := d.DialContext(ctx, "tcp", remote)
+	if err != nil {
+		return nil, err
+	}
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, t.handshakeClock(time.Since(start)))
+	defer cancelHandshake()
+	tc := tls.Client(conn, t.tlsConfig())
+	if err := tc.HandshakeContext(handshakeCtx); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return tc, nil
 }
 
 // tlsConfig is the client config for one remote dial.
@@ -36,7 +93,7 @@ func (t *Tunnel) tlsConfig() *tls.Config {
 // begin listening locally. Each local connection will result in a separate remote connection.
 func (t *Tunnel) DialAndListen() error {
 	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
-	conn, err := tls.Dial("tcp", remote, t.tlsConfig())
+	conn, err := t.dialTLS(remote)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
@@ -122,7 +179,7 @@ func pipe(dst io.Writer, src io.Reader, name string) {
 }
 
 func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
-	sclient, err := tls.Dial("tcp", remote, t.tlsConfig())
+	sclient, err := t.dialTLS(remote)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
