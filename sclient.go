@@ -174,8 +174,7 @@ func (t *Tunnel) DialAndListen() error {
 	defer ln.Close()
 
 	if !t.Silent {
-		_, _ = fmt.Fprintf(os.Stdout, "[listening] %s:%d <= %s:%d\n",
-			t.RemoteAddress, t.RemotePort, t.LocalAddress, t.LocalPort)
+		_, _ = fmt.Fprintf(os.Stdout, "[listening] %s <= %s\n", remote, local)
 	}
 
 	for {
@@ -276,11 +275,11 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 
 	if !t.Silent {
 		if conn.RemoteAddr().Network() == stdioNetwork {
-			_, _ = fmt.Fprintf(os.Stdout, "(connected to %s:%d and reading from %s)\n",
-				t.RemoteAddress, t.RemotePort, conn.RemoteAddr().String())
+			_, _ = fmt.Fprintf(os.Stdout, "(connected to %s and reading from %s)\n",
+				remote, conn.RemoteAddr().String())
 		} else {
-			_, _ = fmt.Fprintf(os.Stdout, "[connect] %s => %s:%d\n",
-				displayAddr(conn.RemoteAddr()), t.RemoteAddress, t.RemotePort)
+			_, _ = fmt.Fprintf(os.Stdout, "[connect] %s => %s\n",
+				displayAddr(conn.RemoteAddr()), remote)
 		}
 	}
 
@@ -289,8 +288,9 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 	// an open connection until it times out (33s on a public front). The TLS
 	// side is half-closed, not closed, so whatever the front has already
 	// buffered still gets through.
-	// local -> remote: when stdin (or the local client) is at EOF the front has
-	// to be told, or it waits on the keep-alive connection until it times out.
+	//
+	// local -> remote: at EOF the front has to be told, or it waits until it
+	// times out.
 	go func() {
 		if err := pipe(conn, sclient); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "[copy error] (local) %s\n", err)
