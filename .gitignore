@@ -1,4 +1,10 @@
 /sclient
 /cmd/sclient/sclient
-
+/bin/
 dist
+
+# agent working files
+/agents/
+
+.DS_Store
+.*.sw*
