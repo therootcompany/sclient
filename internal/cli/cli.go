@@ -96,6 +96,13 @@ func PreParse(stamp Version, fs *flag.FlagSet, args []string) {
 	}
 }
 
+// FailUsage reports a usage error on stderr, prints the usage, and exits 2.
+func FailUsage(name string, fs *flag.FlagSet, msg string) {
+	_, _ = fmt.Fprintf(os.Stderr, "%s: %s\n", name, msg)
+	fs.Usage()
+	os.Exit(2)
+}
+
 // SplitHostPort splits an address, reporting whether it carried a port.
 // "::1:443" is itself a complete IPv6 address, so an unbracketed one is refused
 // rather than guessed.

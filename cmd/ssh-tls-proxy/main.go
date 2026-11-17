@@ -72,13 +72,6 @@ func usage(fs *flag.FlagSet) {
 	_, _ = fmt.Fprintln(w)
 }
 
-// failUsage reports a usage error and exits 2.
-func failUsage(fs *flag.FlagSet, msg string) {
-	_, _ = fmt.Fprintf(os.Stderr, "%s: %s\n", name, msg)
-	fs.Usage()
-	os.Exit(2)
-}
-
 func main() {
 	cfg := MainConfig{}
 
@@ -114,26 +107,26 @@ func main() {
 
 	args := fs.Args()
 	if len(args) != 1 {
-		failUsage(fs, "want <host>[:tls-port]")
+		cli.FailUsage(name, fs, "want <host>[:tls-port]")
 	}
 
 	host, tlsPort, err := hostAndPort(args[0])
 	if err != nil {
-		failUsage(fs, "host: "+err.Error())
+		cli.FailUsage(name, fs, "host: "+err.Error())
 	}
 	if tlsPort != 0 {
 		cfg.tlsPort = tlsPort // a port on the address names the TLS side
 	}
 	if err := cli.PortOf("ssh-port", cfg.sshPort); err != nil {
-		failUsage(fs, err.Error())
+		cli.FailUsage(name, fs, err.Error())
 	}
 	if err := cli.PortOf("tls-port", cfg.tlsPort); err != nil {
-		failUsage(fs, err.Error())
+		cli.FailUsage(name, fs, err.Error())
 	}
 	if cfg.listen != "" {
 		localHost, localPort, err := listenAddr(cfg.listen)
 		if err != nil {
-			failUsage(fs, "--listen: "+err.Error())
+			cli.FailUsage(name, fs, "--listen: "+err.Error())
 		}
 		cfg.localHost, cfg.localPort = localHost, localPort
 	}

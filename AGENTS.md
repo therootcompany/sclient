@@ -30,8 +30,8 @@ This applies to comments, doc comments, README, commit messages, PR bodies, and
 - `cmd/sclient/`, `cmd/ssh-tls-proxy/` - wiring only: flags, usage text, exit
   codes, the signal context. No protocol logic.
 - `internal/cli/` - the argument handling both commands share: the release stamp,
-  address and port parsing, seconds, protocol lists. Each command keeps its own
-  flags, usage text, and exit codes.
+  the `-V`/`--help` pre-parse, address and port parsing, seconds, protocol lists,
+  and the usage-error exit. Each command keeps its own flags and usage text.
 - `internal/ssh/` - the SSH probe: banner exchange, the ALPN and banner gates, the
   deadlines, the grace period, the report. Shared by both commands.
 - `internal/tunnel/` - dial plumbing with no SSH knowledge: `Dial`, `DialTLS`,

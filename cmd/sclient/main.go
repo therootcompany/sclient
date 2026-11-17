@@ -67,13 +67,6 @@ func usage(fs *flag.FlagSet) {
 	_, _ = fmt.Fprintln(w)
 }
 
-// failUsage reports a usage error and exits 2.
-func failUsage(fs *flag.FlagSet, msg string) {
-	_, _ = fmt.Fprintf(os.Stderr, "%s: %s\n", name, msg)
-	fs.Usage()
-	os.Exit(2)
-}
-
 func main() {
 	cfg := MainConfig{}
 
@@ -112,7 +105,7 @@ func main() {
 
 	sshPort, err := sshMode(cfg.ssh, cfg.sshPort, set["ssh-port"])
 	if err != nil {
-		failUsage(fs, err.Error())
+		cli.FailUsage(name, fs, err.Error())
 	}
 
 	switch args := fs.Args(); len(args) {
@@ -125,10 +118,10 @@ func main() {
 			cfg.remote = args[0]
 			cfg.local = "|"
 		} else {
-			failUsage(fs, "want <remote> <local>")
+			cli.FailUsage(name, fs, "want <remote> <local>")
 		}
 	default:
-		failUsage(fs, "want <remote> <local>")
+		cli.FailUsage(name, fs, "want <remote> <local>")
 	}
 
 	tun := &sclient.Tunnel{
@@ -144,7 +137,7 @@ func main() {
 
 	remoteHost, remotePort, err := remoteAddr(cfg.remote)
 	if err != nil {
-		failUsage(fs, "remote: "+err.Error())
+		cli.FailUsage(name, fs, "remote: "+err.Error())
 	}
 	tun.RemoteAddress = remoteHost
 	tun.RemotePort = remotePort
@@ -156,7 +149,7 @@ func main() {
 	} else {
 		localHost, localPort, err := localAddr(cfg.local)
 		if err != nil {
-			failUsage(fs, "local: "+err.Error())
+			cli.FailUsage(name, fs, "local: "+err.Error())
 		}
 		tun.LocalAddress = localHost
 		tun.LocalPort = localPort
