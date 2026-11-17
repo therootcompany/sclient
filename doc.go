@@ -1,5 +1,5 @@
 /*
-sclient unwraps SSL.
+Package sclient unwraps TLS.
 
 It makes secure remote connections (such as HTTPS) available locally as plain-text connections -
 similar to `stunnel` or `openssl s_client`.
