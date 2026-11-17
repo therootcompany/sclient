@@ -137,7 +137,11 @@ func (t *Tunnel) DialAndListen() error {
 		} else {
 			name = "stdin"
 		}
-		conn := &stdnet{os.Stdin, os.Stdout, &stdaddr{net.UnixAddr{Name: name, Net: network}}}
+		conn := &stdnet{
+			in:   os.Stdin,
+			out:  os.Stdout,
+			addr: &stdaddr{net.UnixAddr{Name: name, Net: network}},
+		}
 		t.handleConnection(remote, conn)
 		return nil
 	}
@@ -164,11 +168,14 @@ func (t *Tunnel) DialAndListen() error {
 	}
 }
 
-// I wonder if I can get this to exactly mirror UnixAddr without passing it in
+// stdaddr gives the stdio pseudo-connection a RemoteAddr that reads as
+// "stdin" or "pipe".
 type stdaddr struct {
 	net.UnixAddr
 }
 
+// stdnet wraps the stdin/stdout pair so it behaves like a net.Conn for the
+// relay below.
 type stdnet struct {
 	in   *os.File // os.Stdin
 	out  *os.File // os.Stdout
