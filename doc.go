@@ -28,6 +28,14 @@ In the simplest case you'll just be setting a ServerName and connection info:
 
 	err := sclient.DialAndListen()
 
+To stop the tunnel on a deadline or a signal, give it a context - canceling it
+closes the local listener and returns nil:
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err = sclient.DialAndListenContext(ctx)
+
 # Try the CLI
 
 If you'd like to better understand what sclient does, you can try it out with `go run`:

@@ -2,6 +2,7 @@ package sclient
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -162,7 +163,7 @@ func TestLocalEOFReachesTheFrontWithoutTruncatingTheAnswer(t *testing.T) {
 	}
 	conn := &testConn{in: bytes.NewReader([]byte("GET / HTTP/1.1\r\nHost: test\r\n\r\n"))}
 
-	tun.handleConnection(net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), conn)
+	tun.handleConnection(context.Background(), net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), conn)
 
 	if got := conn.out.String(); got != "answered\n" {
 		t.Fatalf("the front's answer was truncated: got %q, want %q", got, "answered\n")
@@ -170,6 +171,57 @@ func TestLocalEOFReachesTheFrontWithoutTruncatingTheAnswer(t *testing.T) {
 	if got := <-sawEOF; got == "" {
 		t.Error("the front never saw EOF: the local side must half-close when its input ends")
 	}
+}
+
+func TestDialAndListenContextStopsOnCancel(t *testing.T) {
+	cert, err := testCert()
+	if err != nil {
+		t.Fatal(err)
+	}
+	front, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer front.Close()
+	go func() {
+		for {
+			c, err := front.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	// Reserve a port, release it, and reuse it so we can prove the listener
+	// was released when the context was canceled.
+	probePort, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probePort.Addr().(*net.TCPAddr).Port
+	_ = probePort.Close()
+
+	tun := &Tunnel{
+		RemoteAddress: "127.0.0.1",
+		RemotePort:    front.Addr().(*net.TCPAddr).Port,
+		LocalAddress:  "127.0.0.1",
+		LocalPort:     port,
+		Silent:        true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	if err := tun.DialAndListenContext(ctx); err != nil {
+		t.Fatalf("a canceled context should stop the tunnel cleanly, got %v", err)
+	}
+
+	rebind, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("the listener leaked the port: %v", err)
+	}
+	_ = rebind.Close()
 }
 
 func TestHandshakeClock(t *testing.T) {

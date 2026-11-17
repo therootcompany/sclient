@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	sclient "git.rootprojects.org/root/sclient.go"
@@ -184,7 +187,12 @@ func main() {
 		tun.LocalAddress, tun.LocalPort = localHost, localPort
 	}
 
-	if err := tun.DialAndListen(); err != nil {
+	// Ctrl-C or SIGTERM cancels the context, which closes the listener and
+	// returns nil.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := tun.DialAndListenContext(ctx); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "%s\n", err)
 		os.Exit(1)
 	}

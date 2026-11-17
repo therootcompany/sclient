@@ -90,10 +90,11 @@ func (t *Tunnel) reportConnect(remote string, conn *tls.Conn, elapsed time.Durat
 }
 
 // dialTLS connects under the connect clock and handshakes under the handshake
-// clock. The returned connection is ready to communicate.
-func (t *Tunnel) dialTLS(remote string) (*tls.Conn, error) {
+// clock, bounded by the caller's ctx as well. The returned connection is ready
+// to communicate.
+func (t *Tunnel) dialTLS(ctx context.Context, remote string) (*tls.Conn, error) {
 	connect := t.connectClock()
-	ctx, cancel := context.WithTimeout(context.Background(), connect+t.handshakeClock(connect))
+	ctx, cancel := context.WithTimeout(ctx, connect+t.handshakeClock(connect))
 	defer cancel()
 	host, _, err := net.SplitHostPort(remote)
 	if err != nil {
@@ -131,9 +132,16 @@ func (t *Tunnel) tlsConfig(host string) *tls.Config {
 	}
 }
 
-// DialAndListen will create a test TLS connection to the remote address and then
-// begin listening locally. Each local connection will result in a separate remote connection.
+// DialAndListen is DialAndListenContext with a context that is never canceled.
 func (t *Tunnel) DialAndListen() error {
+	return t.DialAndListenContext(context.Background())
+}
+
+// DialAndListenContext creates a test TLS connection to the remote address and
+// then begins listening locally; each local connection gets its own remote
+// connection. Canceling ctx closes the listener and returns nil, so a caller
+// (or SIGINT in the CLI) can stop a tunnel cleanly.
+func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
 
 	// use stdin/stdout: one connection, one dial - no pre-flight probe
@@ -147,14 +155,14 @@ func (t *Tunnel) DialAndListen() error {
 			out:  os.Stdout,
 			addr: &stdaddr{net.UnixAddr{Name: name, Net: stdioNetwork}},
 		}
-		t.handleConnection(remote, conn)
+		t.handleConnection(ctx, remote, conn)
 		return nil
 	}
 
 	// Probe once before binding, so the operator knows early whether the
 	// front is alive; each local connection dials on its own.
 	start := time.Now()
-	probe, err := t.dialTLS(remote)
+	probe, err := t.dialTLS(ctx, remote)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
 	} else {
@@ -172,6 +180,10 @@ func (t *Tunnel) DialAndListen() error {
 	// listener is released; without it the port stays bound until the process
 	// dies.
 	defer ln.Close()
+	// A canceled ctx closes the listener, which makes Accept return and the
+	// function return nil below.
+	stop := context.AfterFunc(ctx, func() { _ = ln.Close() })
+	defer stop()
 
 	if !t.Silent {
 		// Progress and diagnostics go to stderr: stdout is the payload.
@@ -181,11 +193,16 @@ func (t *Tunnel) DialAndListen() error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				// Shut down on request: the accept failed because we closed the
+				// listener ourselves.
+				return nil
+			}
 			// A failing accept never recovers; report it and stop instead of
 			// spinning on the error. main maps it to an exit code.
 			return fmt.Errorf("local listener: %w", err)
 		}
-		go t.handleConnection(remote, conn)
+		go t.handleConnection(ctx, remote, conn)
 	}
 }
 
@@ -263,15 +280,24 @@ func pipe(r io.ReadCloser, w io.WriteCloser) error {
 	return closeErr
 }
 
-func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
+func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn netReadWriteCloser) {
 	start := time.Now()
-	sclient, err := t.dialTLS(remote)
+	sclient, err := t.dialTLS(ctx, remote)
 
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
 		_ = conn.Close()
 		return
 	}
+	t.reportConnect(remote, sclient, time.Since(start))
+
+	// io.Copy cannot be interrupted, so a canceled ctx hangs up both ends and
+	// the pumps end on the resulting closed-connection error.
+	stop := context.AfterFunc(ctx, func() {
+		_ = conn.Close()
+		_ = sclient.Close()
+	})
+	defer stop()
 	t.reportConnect(remote, sclient, time.Since(start))
 
 	if !t.Silent {
