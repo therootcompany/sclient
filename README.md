@@ -74,24 +74,13 @@ sclient [flags] <remote> <local>
   - `-k`, `--insecure` ignore invalid TLS (SSL/HTTPS) certificates
   - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
     not use this option)
-  - `--alpn <protocol-list>`
+  - `--alpn <protocol-list>` acceptable protocols, ex: `h2,http/1.1` `ssh`
 - remote
   - must have servername (i.e. example.com)
   - port is optional (default is 443)
 - local
   - address is optional (default is localhost)
   - must have port (i.e. 3000)
-
-  -alpn string
-    	acceptable protocols, ex: 'h2,http/1.1' 'http/1.1' (default) 'ssh' (default "http/1.1")
-  -insecure
-    	ignore bad TLS/SSL/HTTPS certificates
-  -k	alias for --insecure
-  -s	alias of --silent
-  -servername string
-    	specify a servername different from <remote> (to disable SNI use an IP as <remote> and do use this option)
-  -silent
-    	less verbose output
 
 # Examples
 
