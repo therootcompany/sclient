@@ -2,6 +2,7 @@ package sclient
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -105,39 +106,14 @@ type netReadWriteCloser interface {
 	RemoteAddr() net.Addr
 }
 
-func pipe(r netReadWriteCloser, w netReadWriteCloser, t string) {
-	buffer := make([]byte, 2048)
-	for {
-		done := false
-		// NOTE: count may be > 0 even if there's an err
-		//fmt.Fprintf(os.Stdout, "[debug] (%s) reading\n", t)
-		count, err := r.Read(buffer)
-		if err != nil {
-			//fmt.Fprintf(os.Stdout, "[debug] (%s:%d) error reading %s\n", t, count, err)
-			if err != io.EOF {
-				fmt.Fprintf(os.Stderr, "[read error] (%s:%d) %s\n", t, count, err)
-			}
-			_ = r.Close()
-			//w.Close()
-			done = true
-		}
-		if count == 0 {
-			break
-		}
-		_, err = w.Write(buffer[:count])
-		if err != nil {
-			//fmt.Fprintf(os.Stdout, "[debug] %s error writing\n", t)
-			if err != io.EOF {
-				fmt.Fprintf(os.Stderr, "[write error] (%s) %s\n", t, err)
-			}
-			// TODO handle error closing?
-			_ = r.Close()
-			//w.Close()
-			done = true
-		}
-		if done {
-			break
-		}
+// pipe copies src to dst; io.EOF and a close we initiated end the session,
+// they are not errors.
+func pipe(dst io.Writer, src io.Reader, name string) {
+	if _, err := io.Copy(dst, src); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		fmt.Fprintf(os.Stderr, "[copy error] (%s) %s\n", name, err)
+	}
+	if c, ok := src.(io.Closer); ok {
+		_ = c.Close()
 	}
 }
 
@@ -165,6 +141,8 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 		}
 	}
 
-	go pipe(conn, sclient, "local")
-	pipe(sclient, conn, "remote")
+	// local -> remote and remote -> local; each pump closes its source
+	// when the copy ends
+	go pipe(sclient, conn, "local")
+	pipe(conn, sclient, "remote")
 }
