@@ -23,6 +23,34 @@ var (
 	date    = "0001-01-01"
 )
 
+// init() fills in whatever ldflags left unset, once, at load time. git describe
+// and debug.BuildInfo both return tags that already carry the "v"; printVersion
+// is the only place that adds it back.
+func init() {
+	if version != "0.0.0-dev" && commit != "0000000" {
+		return
+	}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	if tag := strings.TrimPrefix(bi.Main.Version, "v"); tag != "" && tag != "devel" {
+		version = tag
+	}
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			if commit == "0000000" {
+				commit = s.Value
+			}
+		case "vcs.time":
+			if date == "0001-01-01" {
+				date = s.Value
+			}
+		}
+	}
+}
+
 // MainConfig is everything the CLI accepts, one field per flag.
 type MainConfig struct {
 	alpn       string
@@ -35,28 +63,6 @@ type MainConfig struct {
 }
 
 func printVersion(w io.Writer) {
-	// git describe and debug.BuildInfo both return tags that already carry
-	// the "v"; normalize here so this printf is the only place that adds it.
-	if version == "0.0.0-dev" || commit == "0000000" {
-		if bi, ok := debug.ReadBuildInfo(); ok {
-			tag := strings.TrimPrefix(bi.Main.Version, "v")
-			if tag != "" && tag != "devel" {
-				version = tag
-			}
-			for _, s := range bi.Settings {
-				switch s.Key {
-				case "vcs.revision":
-					if commit == "0000000" {
-						commit = s.Value
-					}
-				case "vcs.time":
-					if date == "0001-01-01" {
-						date = s.Value
-					}
-				}
-			}
-		}
-	}
 	_, _ = fmt.Fprintf(w, "%s v%s (%s) %s\n", name, version, shortCommit(commit), date)
 }
 
