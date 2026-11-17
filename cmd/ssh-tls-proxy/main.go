@@ -131,11 +131,11 @@ func main() {
 		failUsage(fs, err.Error())
 	}
 	if cfg.listen != "" {
-		host, port, err := listenAddr(cfg.listen)
+		localHost, localPort, err := listenAddr(cfg.listen)
 		if err != nil {
 			failUsage(fs, "--listen: "+err.Error())
 		}
-		cfg.localHost, cfg.localPort = host, port
+		cfg.localHost, cfg.localPort = localHost, localPort
 	}
 
 	cfg.host = host
@@ -153,7 +153,6 @@ func main() {
 	}
 }
 
-// run builds the proxy config and serves one session: stdio, or a local listener.
 // run serves one SSH session through the library: stdio, or a local listener.
 // The command is a wrapper around sclient.Tunnel, the same entry point the
 // library's own users get.
