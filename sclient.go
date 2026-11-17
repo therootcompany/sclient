@@ -10,8 +10,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/therootcompany/sclient/internal/ssh"
 	"github.com/therootcompany/sclient/internal/tunnel"
 )
+
+// ErrNoServer means neither port was usable in SSH mode. Each candidate's
+// failure is already reported to the diagnostics destination.
+var ErrNoServer = ssh.ErrNoServer
 
 // Tunnel specifies which remote encrypted connection to make available as a plain connection locally.
 type Tunnel struct {
@@ -26,6 +31,9 @@ type Tunnel struct {
 	Verbose            bool
 	TCPTimeout         time.Duration
 	TLSTimeout         time.Duration
+	// SSHPort turns on SSH mode: the plain SSH port probed alongside
+	// RemoteAddress:RemotePort. Zero is a plain TLS tunnel.
+	SSHPort int
 }
 
 // serverName is the name the connection is for: ServerName, or the remote
@@ -59,6 +67,10 @@ func (t *Tunnel) DialAndListen() error {
 //
 // Canceling ctx closes the listener, ends every open connection, and returns nil.
 func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
+	if t.SSHPort > 0 {
+		return t.serveSSH(ctx)
+	}
+
 	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
 
 	// use stdin/stdout: one connection, one dial
@@ -108,6 +120,29 @@ func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 	}
 }
 
+// serveSSH hands the whole SSH-mode session to the ssh package.
+func (t *Tunnel) serveSSH(ctx context.Context) error {
+	cfg := ssh.Config{
+		Host:       t.RemoteAddress,
+		ServerName: t.ServerName,
+		SSHPort:    t.SSHPort,
+		TLSPort:    t.RemotePort,
+		ALPN:       t.NextProtos,
+		TCPTimeout: t.TCPTimeout,
+		TLSTimeout: t.TLSTimeout,
+		Verbose:    t.Verbose,
+		Silent:     t.Silent,
+		Dial:       t.dial(t.NextProtos),
+	}
+
+	if t.LocalAddress == "-" || t.LocalAddress == "|" {
+		return ssh.Serve(ctx, cfg, tunnel.StdioConn(t.LocalAddress), os.Stderr)
+	}
+
+	local := net.JoinHostPort(t.LocalAddress, strconv.Itoa(t.LocalPort))
+	return ssh.Listen(ctx, cfg, local, os.Stderr)
+}
+
 // reportConnect says what a dial negotiated, when the operator asked for more than
 // the bare "connected" line.
 func (t *Tunnel) reportConnect(remote string, conn *tls.Conn, elapsed time.Duration) {
@@ -124,9 +159,10 @@ func (t *Tunnel) reportConnect(remote string, conn *tls.Conn, elapsed time.Durat
 
 func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn net.Conn) {
 	local := bufio.NewReaderSize(conn, 32*1024)
+	protos := ssh.SniffALPN(t.NextProtos, local, conn)
 
 	start := time.Now()
-	remoteConn, err := t.dial(t.NextProtos).DialTLS(ctx, remote, t.NextProtos, nil)
+	remoteConn, err := t.dial(protos).DialTLS(ctx, remote, protos, nil)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
