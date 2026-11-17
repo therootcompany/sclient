@@ -105,11 +105,11 @@ type netReadWriteCloser interface {
 	RemoteAddr() net.Addr
 }
 
-func pipe(src io.ReadCloser, dst io.Writer, name string) {
+func pipe(src io.Reader, dst io.Writer) error {
 	if _, err := io.Copy(dst, src); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-		fmt.Fprintf(os.Stderr, "[copy error] (%s) %s\n", name, err)
+		return err
 	}
-	_ = src.Close()
+	return nil
 }
 
 func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
@@ -136,6 +136,17 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 		}
 	}
 
-	go pipe(conn, sclient, "local")
-	pipe(sclient, conn, "remote")
+	go func() {
+		if err := pipe(conn, sclient); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[copy error] (local) %s\n", err)
+		}
+		// half-close so the remote TLS server sees EOF and can still send its answer
+		_ = sclient.CloseWrite()
+	}()
+	if err := pipe(sclient, conn); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[copy error] (remote) %s\n", err)
+	}
+	// the remote TLS server hung up, so hang up on the local side
+	_ = conn.Close()
+	_ = sclient.Close()
 }
