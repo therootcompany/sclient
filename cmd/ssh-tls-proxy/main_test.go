@@ -60,6 +60,38 @@ func TestHostAndPort(t *testing.T) {
 	}
 }
 
+// --listen needs a port; a bare host is not a listener.
+func TestListenAddr(t *testing.T) {
+	cases := []struct {
+		addr    string
+		host    string
+		port    int
+		wantErr bool
+	}{
+		{"localhost:2222", "localhost", 2222, false},
+		{"127.0.0.1:3010", "127.0.0.1", 3010, false},
+		{"[::1]:2222", "::1", 2222, false},
+		{"localhost", "", 0, true},
+		{"localhost:0", "", 0, true},
+	}
+	for _, tc := range cases {
+		host, port, err := listenAddr(tc.addr)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("listenAddr(%q): got no error, want one", tc.addr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("listenAddr(%q): %v", tc.addr, err)
+			continue
+		}
+		if host != tc.host || port != tc.port {
+			t.Errorf("listenAddr(%q) = %q:%d, want %q:%d", tc.addr, host, port, tc.host, tc.port)
+		}
+	}
+}
+
 // The default offers "ssh"; only an explicit empty list turns the gate off.
 func TestAlpnList(t *testing.T) {
 	cases := []struct {

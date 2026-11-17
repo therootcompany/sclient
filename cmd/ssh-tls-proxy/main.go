@@ -16,10 +16,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/therootcompany/sclient"
 	"github.com/therootcompany/sclient/internal/cli"
 	"github.com/therootcompany/sclient/internal/diagnostics"
-	"github.com/therootcompany/sclient/internal/ssh"
-	"github.com/therootcompany/sclient/internal/tunnel"
 )
 
 const name = "ssh-tls-proxy"
@@ -47,6 +46,8 @@ type MainConfig struct {
 	host       string
 	servername string
 	listen     string
+	localHost  string
+	localPort  int
 	stderr     string
 	alpn       string
 	sshPort    int
@@ -129,6 +130,13 @@ func main() {
 	if err := cli.PortOf("tls-port", cfg.tlsPort); err != nil {
 		failUsage(fs, err.Error())
 	}
+	if cfg.listen != "" {
+		host, port, err := listenAddr(cfg.listen)
+		if err != nil {
+			failUsage(fs, "--listen: "+err.Error())
+		}
+		cfg.localHost, cfg.localPort = host, port
+	}
 
 	cfg.host = host
 
@@ -137,8 +145,8 @@ func main() {
 	defer stop()
 
 	if err := run(ctx, cfg); err != nil {
-		// ssh.ErrNoServer already named every candidate that lost.
-		if !errors.Is(err, ssh.ErrNoServer) {
+		// ErrNoServer already named every candidate that lost.
+		if !errors.Is(err, sclient.ErrNoServer) {
 			_, _ = fmt.Fprintf(os.Stderr, "%s: %s\n", cfg.host, err)
 		}
 		os.Exit(1)
@@ -146,15 +154,17 @@ func main() {
 }
 
 // run builds the proxy config and serves one session: stdio, or a local listener.
+// run serves one SSH session through the library: stdio, or a local listener.
+// The command is a wrapper around sclient.Tunnel, the same entry point the
+// library's own users get.
 func run(ctx context.Context, cfg MainConfig) error {
-	timeout := cli.Seconds(cfg.tcpTimeout)
-	proxy := ssh.Config{
-		Host:               cfg.host,
-		ServerName:         cfg.servername,
+	tun := &sclient.Tunnel{
+		RemoteAddress:      cfg.host,
+		RemotePort:         cfg.tlsPort,
 		SSHPort:            cfg.sshPort,
-		TLSPort:            cfg.tlsPort,
-		ALPN:               alpnList(cfg.alpn),
-		TCPTimeout:         timeout,
+		ServerName:         cfg.servername,
+		NextProtos:         alpnList(cfg.alpn),
+		TCPTimeout:         cli.Seconds(cfg.tcpTimeout),
 		TLSTimeout:         cli.Seconds(cfg.tlsTimeout),
 		InsecureSkipVerify: cfg.insecure,
 		Verbose:            cfg.verbose,
@@ -162,9 +172,29 @@ func run(ctx context.Context, cfg MainConfig) error {
 	}
 
 	if cfg.listen == "" {
-		return ssh.Serve(ctx, proxy, tunnel.StdioConn("-"), os.Stderr)
+		tun.LocalAddress = "-" // the SSH client is stdin and stdout
+		return tun.DialAndListenContext(ctx)
 	}
-	return ssh.Listen(ctx, proxy, cfg.listen, os.Stderr)
+
+	tun.LocalAddress = cfg.localHost
+	tun.LocalPort = cfg.localPort
+	return tun.DialAndListenContext(ctx)
+}
+
+// listenAddr parses --listen <host>:<port>; the port is required.
+func listenAddr(s string) (string, int, error) {
+	host, rawPort, hasPort, err := cli.SplitHostPort(s)
+	if err != nil {
+		return "", 0, err
+	}
+	if !hasPort {
+		return "", 0, fmt.Errorf("want <host>:<port>, got %q", s)
+	}
+	port, err := cli.ParsePort(rawPort)
+	if err != nil {
+		return "", 0, err
+	}
+	return host, port, nil
 }
 
 // hostAndPort parses <host> or <host>:<port>. Without a port the caller keeps the
