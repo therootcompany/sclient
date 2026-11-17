@@ -8,7 +8,6 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -19,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/therootcompany/sclient/internal/tunnel"
 )
 
 const (
@@ -33,8 +34,8 @@ const (
 )
 
 // tlsServer starts a TLS server on 127.0.0.1 that reads a request to EOF before
-// answering - the behavior the pumps have to satisfy. It returns the address, a
-// shutdown function, and the number of connections it has accepted.
+// answering - the behavior the copy loops have to satisfy. It returns the address,
+// a shutdown function, and the number of connections it has accepted.
 func tlsServer(t *testing.T) (string, func(), *atomic.Int32) {
 	t.Helper()
 
@@ -104,7 +105,7 @@ func remoteOf(t *testing.T) (string, int, func(), *atomic.Int32) {
 }
 
 // The name defaults to the remote address. Go sends no SNI for an IP.
-func TestTLSConfigServerName(t *testing.T) {
+func TestDialServerName(t *testing.T) {
 	cases := []struct {
 		remote     string
 		servername string
@@ -119,8 +120,8 @@ func TestTLSConfigServerName(t *testing.T) {
 	}
 	for _, c := range cases {
 		tun := &Tunnel{RemoteAddress: c.remote, ServerName: c.servername}
-		if got := tun.tlsConfig().ServerName; got != c.want {
-			t.Errorf("tlsConfig(remote %q, servername %q): got %q, want %q",
+		if got := tun.dial(nil).ServerName; got != c.want {
+			t.Errorf("dial(remote %q, servername %q): got %q, want %q",
 				c.remote, c.servername, got, c.want)
 		}
 	}
@@ -131,8 +132,9 @@ func TestDialIPRemoteNamesItself(t *testing.T) {
 	host, port, shutdown, _ := remoteOf(t)
 	defer shutdown()
 
-	tun := &Tunnel{RemoteAddress: host, RemotePort: port}
-	_, err := tun.dial(context.Background(), net.JoinHostPort(host, strconv.Itoa(port)))
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+
+	_, err := (&Tunnel{RemoteAddress: host, RemotePort: port}).dial(nil).DialTLS(context.Background(), addr, nil, nil)
 	if err == nil {
 		t.Fatalf("dial %s: the untrusted certificate was accepted", host)
 	}
@@ -144,7 +146,7 @@ func TestDialIPRemoteNamesItself(t *testing.T) {
 	}
 
 	insecure := &Tunnel{RemoteAddress: host, RemotePort: port, InsecureSkipVerify: true}
-	conn, err := insecure.dial(context.Background(), net.JoinHostPort(host, strconv.Itoa(port)))
+	conn, err := insecure.dial(nil).DialTLS(context.Background(), addr, nil, nil)
 	if err != nil {
 		t.Fatalf("dial -k %s: %v", host, err)
 	}
@@ -162,7 +164,7 @@ func TestPipeEndsBothStreams(t *testing.T) {
 	local := &stubConn{in: bytes.NewBufferString(request), out: &bytes.Buffer{}}
 
 	done := make(chan error, 1)
-	go func() { done <- pipe(local, remote) }()
+	go func() { done <- tunnel.Pipe(local, remote) }()
 
 	select {
 	case err := <-done:
@@ -245,35 +247,31 @@ func TestDialAndListenListener(t *testing.T) {
 	host, port, shutdown, conns := remoteOf(t)
 	defer shutdown()
 
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("local port: %v", err)
-	}
-	localAddr := probe.Addr().(*net.TCPAddr)
-	_ = probe.Close()
+	local := localPort(t)
 
 	tun := &Tunnel{
 		RemoteAddress:      host,
 		RemotePort:         port,
 		LocalAddress:       "127.0.0.1",
-		LocalPort:          localAddr.Port,
+		LocalPort:          local.Port,
 		InsecureSkipVerify: true,
 		Silent:             true,
 	}
 
-	// The listener stays up for the next connection, so the read deadline is
-	// what bounds this test.
+	// The listener stays up for the next connection, so the read deadline is what
+	// bounds this test.
 	go func() { _ = tun.DialAndListen() }()
 
 	var conn net.Conn
+	var err error
 	for attempt := 0; attempt < bindTries && conn == nil; attempt++ {
-		conn, err = net.Dial("tcp", localAddr.String())
+		conn, err = net.Dial("tcp", local.String())
 		if err != nil {
 			time.Sleep(bindWait)
 		}
 	}
 	if conn == nil {
-		t.Fatalf("listener: nothing bound %s", localAddr.String())
+		t.Fatalf("listener: nothing bound %s", local.String())
 	}
 	defer conn.Close()
 
@@ -288,7 +286,7 @@ func TestDialAndListenListener(t *testing.T) {
 		t.Fatalf("listener: no reply from %s: %v", host, err)
 	}
 	if string(got) != reply {
-		t.Errorf("listener: got %q, want %q", string(got), reply)
+		t.Errorf("listener: got %q, want %q", got, reply)
 	}
 
 	// The pre-flight probe, then the client.
@@ -477,74 +475,6 @@ func TestDialAndListenContextAlreadyCanceled(t *testing.T) {
 	_ = rebind.Close()
 }
 
-// 0 means 3x the connect, floored at 150ms; an explicit timeout wins.
-func TestHandshakeDeadline(t *testing.T) {
-	cases := []struct {
-		tlsTimeout time.Duration
-		connect    time.Duration
-		want       time.Duration
-	}{
-		{0, time.Millisecond, minHandshakeDeadline},                   // auto, floored
-		{0, 100 * time.Millisecond, 300 * time.Millisecond},           // auto, 3x the connect
-		{300 * time.Millisecond, time.Second, 300 * time.Millisecond}, // explicit wins
-		{-1, time.Second, 3 * time.Second},                            // nonsense falls back
-	}
-	for _, c := range cases {
-		tun := &Tunnel{TLSTimeout: c.tlsTimeout}
-		if got := tun.handshakeDeadline(c.connect); got != c.want {
-			t.Errorf("handshakeDeadline(timeout %s, connect %s): got %s, want %s",
-				c.tlsTimeout, c.connect, got, c.want)
-		}
-	}
-}
-
-// A server that accepts the connection but never handshakes must time out.
-func TestDialHonorsTLSDeadline(t *testing.T) {
-	blackhole, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("blackhole: %v", err)
-	}
-	defer blackhole.Close()
-
-	addr := blackhole.Addr().String()
-	for _, tun := range []*Tunnel{
-		{ServerName: "localhost"},                                     // auto: the 150ms floor
-		{ServerName: "localhost", TLSTimeout: 100 * time.Millisecond}, // explicit
-	} {
-		start := time.Now()
-		conn, err := tun.dial(context.Background(), addr)
-		elapsed := time.Since(start)
-		if err == nil {
-			_ = conn.Close()
-			t.Fatalf("dial(%s): the handshake never timed out", addr)
-		}
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("dial: got %v, want a deadline exceeded", err)
-		}
-		// The handshake deadline fired, not the 5s connect default.
-		if elapsed > time.Second {
-			t.Errorf("dial: took %s, want well under the %s connect default", elapsed, defaultTCPDeadline)
-		}
-	}
-}
-
-// displayAddr prints loopback as localhost.
-func TestDisplayAddr(t *testing.T) {
-	cases := []struct {
-		addr net.Addr
-		want string
-	}{
-		{&net.TCPAddr{IP: net.IPv6loopback, Port: 3000}, "localhost:3000"},
-		{&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 3000}, "localhost:3000"},
-		{&net.TCPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 3000}, "192.0.2.1:3000"},
-	}
-	for _, c := range cases {
-		if got := displayAddr(c.addr); got != c.want {
-			t.Errorf("displayAddr(%s): got %q, want %q", c.addr, got, c.want)
-		}
-	}
-}
-
 // "::1:3000" is not an address; the tunnel has to bracket it.
 func TestIPv6LocalAddress(t *testing.T) {
 	host, port, shutdown, _ := remoteOf(t)
@@ -554,9 +484,9 @@ func TestIPv6LocalAddress(t *testing.T) {
 	if err != nil {
 		t.Skipf("no IPv6 loopback on this host: %v", err)
 	}
-	localPort := probe.Addr().(*net.TCPAddr).Port
+	portNumber := probe.Addr().(*net.TCPAddr).Port
 	_ = probe.Close()
-	local := net.JoinHostPort("::1", strconv.Itoa(localPort))
+	local := net.JoinHostPort("::1", strconv.Itoa(portNumber))
 
 	diagRead, diagWrite, err := os.Pipe()
 	if err != nil {
@@ -570,7 +500,7 @@ func TestIPv6LocalAddress(t *testing.T) {
 		RemoteAddress:      host,
 		RemotePort:         port,
 		LocalAddress:       "::1",
-		LocalPort:          localPort,
+		LocalPort:          portNumber,
 		InsecureSkipVerify: true,
 	}
 
