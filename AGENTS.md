@@ -27,8 +27,11 @@ This applies to comments, doc comments, README, commit messages, PR bodies, and
 
 ## Package structure
 
-- `cmd/sclient/`, `cmd/ssh-tls-proxy/` - wiring only: flags, version stamp, exit
+- `cmd/sclient/`, `cmd/ssh-tls-proxy/` - wiring only: flags, usage text, exit
   codes, the signal context. No protocol logic.
+- `internal/cli/` - the argument handling both commands share: the release stamp,
+  address and port parsing, seconds, protocol lists. Each command keeps its own
+  flags, usage text, and exit codes.
 - `internal/ssh/` - the SSH probe: banner exchange, the ALPN and banner gates, the
   deadlines, the grace period, the report. Shared by both commands.
 - `internal/tunnel/` - dial plumbing with no SSH knowledge: `Dial`, `DialTLS`,
@@ -39,8 +42,8 @@ This applies to comments, doc comments, README, commit messages, PR bodies, and
 - `sclient.go`, `doc.go` - the public library API; the CLI is a thin wrapper.
 
 If a helper is needed by more than one command, it belongs in `internal/`, not in
-`cmd/`. Two commands parsing the same address format is fine; two commands
-re-implementing the same tty probe is not.
+`cmd/`. Two commands naming their own defaults is fine; two commands re-implementing
+the same tty probe, port validator, or version stamp is not.
 
 ## Release builds
 

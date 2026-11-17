@@ -6,10 +6,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestUsagePrintsVersionOnce(t *testing.T) {
+// The stamp appears once, and the positional form is spelled out. Splitting an
+// address is internal/cli's job and is tested there.
+func TestUsagePrintsStampOnce(t *testing.T) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.Usage = func() { usage(fs) }
 
@@ -17,15 +18,17 @@ func TestUsagePrintsVersionOnce(t *testing.T) {
 	fs.SetOutput(&out)
 	fs.Usage()
 
-	if got := strings.Count(out.String(), version); got != 1 {
-		t.Errorf("usage printed the version %d times, want once", got)
+	if got := strings.Count(out.String(), stamp.String()); got != 1 {
+		t.Errorf("usage printed the stamp %d times, want 1", got)
 	}
-	if !strings.Contains(out.String(), "USAGE: "+name) {
-		t.Errorf("usage = %q, want the USAGE line", out.String())
+	if !strings.Contains(out.String(), "USAGE: "+name+" [flags] <host>[:tls-port]") {
+		t.Errorf("usage = %q, want the positional form", out.String())
 	}
 }
 
-func TestHostPort(t *testing.T) {
+// A port on the positional address names the TLS side; without one the flag's
+// default stands.
+func TestHostAndPort(t *testing.T) {
 	cases := []struct {
 		addr     string
 		wantHost string
@@ -37,23 +40,22 @@ func TestHostPort(t *testing.T) {
 		{"[::1]", "::1", 0, false},
 		{"[::1]:443", "::1", 443, false},
 		{"", "", 0, true},
-		{"::1:443", "", 0, true}, // ambiguous: an IPv6 with a port needs brackets
-		{"example.com:x", "", 0, true},
+		{"::1:443", "", 0, true},
 	}
 	for _, tc := range cases {
-		host, port, err := hostPort(tc.addr)
+		host, port, err := hostAndPort(tc.addr)
 		if tc.wantErr {
 			if err == nil {
-				t.Errorf("hostPort(%q): got no error, want one", tc.addr)
+				t.Errorf("hostAndPort(%q): got no error, want one", tc.addr)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("hostPort(%q): %v", tc.addr, err)
+			t.Errorf("hostAndPort(%q): %v", tc.addr, err)
 			continue
 		}
 		if host != tc.wantHost || port != tc.wantPort {
-			t.Errorf("hostPort(%q) = %q, %d; want %q, %d", tc.addr, host, port, tc.wantHost, tc.wantPort)
+			t.Errorf("hostAndPort(%q) = %q, %d; want %q, %d", tc.addr, host, port, tc.wantHost, tc.wantPort)
 		}
 	}
 }
@@ -73,30 +75,5 @@ func TestAlpnList(t *testing.T) {
 		if got := alpnList(tc.raw); !slices.Equal(got, tc.want) {
 			t.Errorf("alpnList(%q) = %q, want %q", tc.raw, got, tc.want)
 		}
-	}
-}
-
-func TestCheckPort(t *testing.T) {
-	for _, port := range []int{1, 22, 443, 65535} {
-		if err := checkPort("tls-port", port); err != nil {
-			t.Errorf("checkPort(%d): %v", port, err)
-		}
-	}
-	for _, port := range []int{0, -1, 65536} {
-		if err := checkPort("tls-port", port); err == nil {
-			t.Errorf("checkPort(%d): got no error, want one", port)
-		}
-	}
-}
-
-func TestSeconds(t *testing.T) {
-	if got := seconds(0); got != 0 {
-		t.Errorf("seconds(0) = %v, want 0 (auto)", got)
-	}
-	if got := seconds(2.5); got != 2500*time.Millisecond {
-		t.Errorf("seconds(2.5) = %v, want 2.5s", got)
-	}
-	if got := seconds(-1); got != 0 {
-		t.Errorf("seconds(-1) = %v, want 0 (auto)", got)
 	}
 }

@@ -7,21 +7,16 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/signal"
-	"runtime/debug"
-	"strconv"
-	"strings"
 	"syscall"
-	"time"
 
+	"github.com/therootcompany/sclient/internal/cli"
 	"github.com/therootcompany/sclient/internal/diagnostics"
 	"github.com/therootcompany/sclient/internal/ssh"
 	"github.com/therootcompany/sclient/internal/tunnel"
@@ -35,12 +30,18 @@ const (
 )
 
 // Stamped by goreleaser at release time (-X main.version, -X main.commit,
-// -X main.date); init() fills in what is left unset for go run and go build.
+// -X main.date); stamp normalizes what is left for go run and plain go build.
 var (
 	version = ""
 	commit  = ""
 	date    = ""
 )
+
+var stamp cli.Version
+
+func init() { stamp = cli.Stamp(name, version, commit, date) }
+
+func printVersion(w io.Writer) { stamp.Print(w) }
 
 type MainConfig struct {
 	host       string
@@ -55,56 +56,6 @@ type MainConfig struct {
 	insecure   bool
 	silent     bool
 	verbose    bool
-}
-
-func shortCommit(c string) string {
-	return c[:min(len(c), 7)]
-}
-
-func printVersion(w io.Writer) {
-	_, _ = fmt.Fprintf(w, "%s %s (%s) %s\n", name, version, commit, date)
-}
-
-// buildSetting returns one VCS setting, or "" when the binary has none.
-func buildSetting(settings []debug.BuildSetting, key string) string {
-	for _, setting := range settings {
-		if setting.Key == key {
-			return setting.Value
-		}
-	}
-	return ""
-}
-
-func init() {
-	// ldflags win; ReadBuildInfo is the fallback for go run and plain go build.
-	if version == "" || commit == "" || date == "" {
-		if bi, ok := debug.ReadBuildInfo(); ok {
-			if version == "" && bi.Main.Version != "devel" {
-				version = bi.Main.Version
-			}
-			if commit == "" {
-				commit = buildSetting(bi.Settings, "vcs.revision")
-			}
-			if date == "" {
-				date = buildSetting(bi.Settings, "vcs.time")
-			}
-		}
-	}
-
-	version = strings.TrimPrefix(version, "v")
-	if version == "" {
-		version = "dev"
-	}
-	if commit == "" {
-		commit = "0000000"
-	}
-	if date == "" {
-		date = "0001-01-01"
-	}
-	commit = shortCommit(commit)
-	if when, err := time.Parse(time.RFC3339, date); err == nil {
-		date = when.Format(time.DateOnly)
-	}
 }
 
 func usage(fs *flag.FlagSet) {
@@ -148,17 +99,7 @@ func main() {
 	fs.Usage = func() { usage(fs) }
 
 	// Before parsing: -V and help survive junk arguments.
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "-V", "-version", "--version", "version":
-			printVersion(os.Stdout)
-			os.Exit(0)
-		case "help", "-help", "--help":
-			fs.SetOutput(os.Stdout)
-			fs.Usage()
-			os.Exit(0)
-		}
-	}
+	cli.PreParse(stamp, fs, os.Args[1:])
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -175,17 +116,17 @@ func main() {
 		failUsage(fs, "want <host>[:tls-port]")
 	}
 
-	host, tlsPort, err := hostPort(args[0])
+	host, tlsPort, err := hostAndPort(args[0])
 	if err != nil {
 		failUsage(fs, "host: "+err.Error())
 	}
 	if tlsPort != 0 {
 		cfg.tlsPort = tlsPort // a port on the address names the TLS side
 	}
-	if err := checkPort("ssh-port", cfg.sshPort); err != nil {
+	if err := cli.PortOf("ssh-port", cfg.sshPort); err != nil {
 		failUsage(fs, err.Error())
 	}
-	if err := checkPort("tls-port", cfg.tlsPort); err != nil {
+	if err := cli.PortOf("tls-port", cfg.tlsPort); err != nil {
 		failUsage(fs, err.Error())
 	}
 
@@ -206,16 +147,15 @@ func main() {
 
 // run builds the proxy config and serves one session: stdio, or a local listener.
 func run(ctx context.Context, cfg MainConfig) error {
-	alpn := alpnList(cfg.alpn)
-
+	timeout := cli.Seconds(cfg.tcpTimeout)
 	proxy := ssh.Config{
 		Host:               cfg.host,
 		ServerName:         cfg.servername,
 		SSHPort:            cfg.sshPort,
 		TLSPort:            cfg.tlsPort,
-		ALPN:               alpn,
-		TCPTimeout:         seconds(cfg.tcpTimeout),
-		TLSTimeout:         seconds(cfg.tlsTimeout),
+		ALPN:               alpnList(cfg.alpn),
+		TCPTimeout:         timeout,
+		TLSTimeout:         cli.Seconds(cfg.tlsTimeout),
 		InsecureSkipVerify: cfg.insecure,
 		Verbose:            cfg.verbose,
 		Silent:             cfg.silent,
@@ -227,70 +167,28 @@ func run(ctx context.Context, cfg MainConfig) error {
 	return ssh.Listen(ctx, proxy, cfg.listen, os.Stderr)
 }
 
-// hostPort parses <host> or <host>:<port>. Without a port the caller keeps the
+// hostAndPort parses <host> or <host>:<port>. Without a port the caller keeps the
 // TLS default.
-func hostPort(s string) (string, int, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "", 0, errors.New("empty address")
+func hostAndPort(s string) (string, int, error) {
+	host, rawPort, hasPort, err := cli.SplitHostPort(s)
+	if err != nil {
+		return "", 0, err
 	}
-
-	host, rawPort, err := net.SplitHostPort(s)
-	if err == nil {
-		port, err := parsePort(rawPort)
-		if err != nil {
-			return "", 0, fmt.Errorf("%q: %w", s, err)
-		}
-		return host, port, nil
+	if !hasPort {
+		return host, 0, nil
 	}
-	if !strings.Contains(s, ":") {
-		return s, 0, nil
+	port, err := cli.ParsePort(rawPort)
+	if err != nil {
+		return "", 0, fmt.Errorf("%q: %w", s, err)
 	}
-	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
-		return s[1 : len(s)-1], 0, nil
-	}
-	return "", 0, fmt.Errorf("%q: want <host>:<port>, or an IPv6 address in brackets", s)
+	return host, port, nil
 }
 
-// checkPort names a flag whose value is not a port.
-func checkPort(flagName string, port int) error {
-	if port < 1 || port > 65535 {
-		return fmt.Errorf("--%s must be 1-65535, got %d", flagName, port)
-	}
-	return nil
-}
-
-func parsePort(raw string) (int, error) {
-	port, err := strconv.Atoi(raw)
-	if err != nil || port < 1 || port > 65535 {
-		return 0, fmt.Errorf("%q is not a port (1-65535)", raw)
-	}
-	return port, nil
-}
-
-func seconds(raw float64) time.Duration {
-	if raw <= 0 {
-		return 0
-	}
-	return time.Duration(raw * float64(time.Second))
-}
-
-// alpnList is --alpn as offered. The default "ssh" is the gate; an explicit
-// empty list turns it off.
+// alpnList is --alpn as offered. The default "ssh" is the gate; an explicit empty
+// list turns it off.
 func alpnList(raw string) []string {
-	list := parseOptionList(raw)
-	if list == nil {
-		return []string{}
+	if list := cli.Options(raw); list != nil {
+		return list
 	}
-	return list
-}
-
-// parsers "a,b,c" "a b c" and "a, b, c" all the same
-func parseOptionList(optionList string) []string {
-	optionList = strings.TrimSpace(optionList)
-	if optionList == "" {
-		return nil
-	}
-	optionList = strings.ReplaceAll(optionList, ",", " ")
-	return strings.Fields(optionList)
+	return []string{}
 }

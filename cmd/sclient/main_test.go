@@ -8,8 +8,9 @@ import (
 	"testing"
 )
 
-// The version line appears once, whatever stream usage is written to.
-func TestUsagePrintsVersionOnce(t *testing.T) {
+// The stamp appears once, whichever stream usage is written to. Address parsing
+// and port ranges are internal/cli's job and are tested there.
+func TestUsagePrintsStampOnce(t *testing.T) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.Usage = func() { usage(fs) }
 
@@ -17,12 +18,15 @@ func TestUsagePrintsVersionOnce(t *testing.T) {
 	fs.SetOutput(&out)
 	fs.Usage()
 
-	if got := strings.Count(out.String(), version); got != 1 {
-		t.Errorf("usage printed the version %d times, want 1", got)
+	if got := strings.Count(out.String(), stamp.String()); got != 1 {
+		t.Errorf("usage printed the stamp %d times, want 1", got)
+	}
+	if !strings.Contains(out.String(), "USAGE: "+name) {
+		t.Errorf("usage = %q, want the USAGE line", out.String())
 	}
 }
 
-// The defaults and rejections the parsers own.
+// A bare remote takes the TLS port; a bare IPv6 keeps its default too.
 func TestRemoteAddr(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -30,31 +34,26 @@ func TestRemoteAddr(t *testing.T) {
 		port int
 		err  bool
 	}{
-		{"example.com", "example.com", 443, false}, // a bare host takes the default port
-		{"[::1]", "::1", 443, false},               // bracketed IPv6, no port
-		{" example.com ", "example.com", 443, false},
-		{"::1", "", 0, true}, // ambiguous: "::1:443" is an IPv6 address
-		{"2001:db8::1:443", "", 0, true},
+		{"example.com", "example.com", 443, false},
+		{"example.com:8443", "example.com", 8443, false},
+		{"[::1]", "::1", 443, false},
 		{"example.com:99999", "", 0, true},
-		{"example.com:0", "", 0, true},
-		{"example.com:", "", 0, true},
-		{"", "", 0, true},
+		{"::1:443", "", 0, true},
 	}
-
-	for _, c := range cases {
-		host, port, err := remoteAddr(c.in)
-		if c.err {
+	for _, tc := range cases {
+		host, port, err := remoteAddr(tc.in)
+		if tc.err {
 			if err == nil {
-				t.Errorf("remoteAddr(%q): got %q:%d, want an error", c.in, host, port)
+				t.Errorf("remoteAddr(%q): got %q:%d, want an error", tc.in, host, port)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("remoteAddr(%q): %v", c.in, err)
+			t.Errorf("remoteAddr(%q): %v", tc.in, err)
 			continue
 		}
-		if host != c.host || port != c.port {
-			t.Errorf("remoteAddr(%q): got %q:%d, want %q:%d", c.in, host, port, c.host, c.port)
+		if host != tc.host || port != tc.port {
+			t.Errorf("remoteAddr(%q) = %q:%d, want %q:%d", tc.in, host, port, tc.host, tc.port)
 		}
 	}
 }
@@ -68,31 +67,31 @@ func TestLocalAddr(t *testing.T) {
 		err  bool
 	}{
 		{"3000", "localhost", 3000, false},
+		{"localhost:3000", "localhost", 3000, false},
 		{"[::1]:3000", "::1", 3000, false},
 		{"localhost", "", 0, true},
-		{"[::1]", "", 0, true},
 		{"3000x", "", 0, true},
-		{"", "", 0, true},
 	}
-
-	for _, c := range cases {
-		host, port, err := localAddr(c.in)
-		if c.err {
+	for _, tc := range cases {
+		host, port, err := localAddr(tc.in)
+		if tc.err {
 			if err == nil {
-				t.Errorf("localAddr(%q): got %q:%d, want an error", c.in, host, port)
+				t.Errorf("localAddr(%q): got %q:%d, want an error", tc.in, host, port)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("localAddr(%q): %v", c.in, err)
+			t.Errorf("localAddr(%q): %v", tc.in, err)
 			continue
 		}
-		if host != c.host || port != c.port {
-			t.Errorf("localAddr(%q): got %q:%d, want %q:%d", c.in, host, port, c.host, c.port)
+		if host != tc.host || port != tc.port {
+			t.Errorf("localAddr(%q) = %q:%d, want %q:%d", tc.in, host, port, tc.host, tc.port)
 		}
 	}
 }
 
+// --ssh and --ssh-port: naming a port is the mode, --ssh is the shorthand for 22,
+// and a named zero is a mistake rather than "off".
 func TestSSHMode(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -142,7 +141,8 @@ func TestAlpnList(t *testing.T) {
 	for _, tc := range cases {
 		got := alpnList(tc.raw, tc.explicit, tc.sshMode)
 		if !slices.Equal(got, tc.want) {
-			t.Errorf("alpnList(%q, explicit=%v, ssh=%v) = %q, want %q", tc.raw, tc.explicit, tc.sshMode, got, tc.want)
+			t.Errorf("alpnList(%q, explicit %v, ssh %v) = %q, want %q",
+				tc.raw, tc.explicit, tc.sshMode, got, tc.want)
 		}
 	}
 }
