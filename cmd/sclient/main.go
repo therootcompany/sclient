@@ -116,6 +116,13 @@ func main() {
 		}
 	}
 
+	// Every usage error leaves the same way: the reason, then the usage.
+	fail := func(err error) {
+		_, _ = fmt.Fprintf(os.Stderr, "%s: %s\n", name, err)
+		fs.Usage()
+		os.Exit(2)
+	}
+
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(0)
@@ -125,10 +132,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	if cfg.tcpTimeout < 0 || cfg.tlsTimeout < 0 {
-		_, _ = fmt.Fprintf(os.Stderr, "%s: timeouts must be 0 (the default) or a positive number of seconds\n", name)
-		fs.Usage()
-		os.Exit(2)
+	tcpTimeout, err := timeoutFlag("tcp-timeout", cfg.tcpTimeout)
+	if err != nil {
+		fail(err)
+	}
+	tlsTimeout, err := timeoutFlag("tls-timeout", cfg.tlsTimeout)
+	if err != nil {
+		fail(err)
 	}
 
 	alpns := parseOptionList(cfg.alpn)
@@ -142,8 +152,7 @@ func main() {
 		if stat, _ := os.Stdin.Stat(); n == 1 && (stat.Mode()&os.ModeCharDevice) == 0 {
 			localstr = sclient.Stdio
 		} else {
-			fs.Usage()
-			os.Exit(2)
+			fail(fmt.Errorf("expected <remote> and <local>, got %d arguments", n))
 		}
 	}
 
@@ -153,15 +162,13 @@ func main() {
 		Silent:             cfg.silent,
 		Verbose:            cfg.verbose,
 		NextProtos:         alpns,
-		TCPTimeout:         seconds(cfg.tcpTimeout),
-		TLSTimeout:         seconds(cfg.tlsTimeout),
+		TCPTimeout:         tcpTimeout,
+		TLSTimeout:         tlsTimeout,
 	}
 
 	remoteHost, remotePort, err := remoteAddr(remotestr, defaultRemotePort)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "%s: %s\n", name, err)
-		fs.Usage()
-		os.Exit(2)
+		fail(err)
 	}
 	tun.RemoteAddress, tun.RemotePort = remoteHost, remotePort
 
@@ -172,9 +179,7 @@ func main() {
 	} else {
 		localHost, localPort, err := localAddr(localstr)
 		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "%s: %s\n", name, err)
-			fs.Usage()
-			os.Exit(2)
+			fail(err)
 		}
 		tun.LocalAddress, tun.LocalPort = localHost, localPort
 	}
@@ -240,13 +245,13 @@ func shortCommit(c string) string {
 	return c[:min(len(c), 7)]
 }
 
-// seconds turns a flag value into a duration; a non-positive value leaves the
-// field at zero, which the engine reads as "use the default".
-func seconds(raw float64) time.Duration {
-	if raw <= 0 {
-		return 0
+// timeoutFlag turns a flag value into a duration. 0 means "the default"; a
+// negative value is an error, so nothing else has to re-check it.
+func timeoutFlag(flagName string, raw float64) (time.Duration, error) {
+	if raw < 0 {
+		return 0, fmt.Errorf("--%s must be 0 (the default) or a positive number of seconds", flagName)
 	}
-	return time.Duration(raw * float64(time.Second))
+	return time.Duration(raw * float64(time.Second)), nil
 }
 
 // parseOptionList parses "a,b,c", "a b c", and "a, b, c" the same
