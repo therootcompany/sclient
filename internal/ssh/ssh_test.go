@@ -350,6 +350,27 @@ func TestProbeALPNGateOff(t *testing.T) {
 	}
 }
 
+// A name that does not resolve is one failure, named once, and no dial is tried.
+func TestProbeLooksUpTheHostOnce(t *testing.T) {
+	cfg := loopbackConfig(1, 1)
+	cfg.Host = "does-not-exist.invalid" // RFC 2606: never resolves
+
+	start := time.Now()
+	var report strings.Builder
+	_, err := probe(context.Background(), cfg, "SSH-2.0-client", &report)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, ErrNoServer) {
+		t.Fatalf("probe: got %v, want ErrNoServer", err)
+	}
+	if count := strings.Count(report.String(), "no such host"); count != 1 {
+		t.Errorf("report = %q, want the lookup named once", report.String())
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("probe dialled anyway: %s", ElapsedFor(elapsed))
+	}
+}
+
 // SSH mode does not dial an IP over TLS unless the server is named: a proxy that
 // routes by name has nothing to route on an address. Serve is the path callers
 // take, so the resolution is tested there.

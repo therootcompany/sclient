@@ -44,6 +44,22 @@ fn_check() {
 	sed -n '1,20p' "$file"
 }
 
+# fn_once is fn_check when the line must appear exactly N times.
+fn_once() {
+	name=$1
+	want=$2
+	pattern=$3
+	file=$4
+	count=$(grep -c "$pattern" "$file" || true)
+	if [ "$count" -eq "$want" ]; then
+		printf 'ok   %s\n' "$name"
+		return
+	fi
+	g_failures=$((g_failures + 1))
+	printf 'FAIL %s: %s appeared %s time(s), want %s\n' "$name" "$pattern" "$count" "$want"
+	sed -n '1,20p' "$file"
+}
+
 fn_roundtrip() {
 	name=$1
 	port=$2
@@ -153,6 +169,17 @@ if "$g_bin" --ssh-port 0 127.0.0.1:"$g_tls" 127.0.0.1:3007 >/dev/null 2>&1; then
 else
 	printf 'ok   F usage error (exit 2)\n'
 fi
+
+# G: a name that does not resolve is one failure, named once, before either dial.
+if printf 'SSH-2.0-SmokeClient_1.0\r\nBYE\r\n' |
+	timeout 3 "$g_bin" --stderr agents/tmp/smoke-G.log --ssh-port "$g_plain" \
+		--insecure --servername does-not-exist.invalid does-not-exist.invalid:443 - >/dev/null 2>&1; then
+	g_failures=$((g_failures + 1))
+	printf 'FAIL G: an unresolvable name should exit 1\n'
+else
+	printf 'ok   G unresolvable name (exit 1)\n'
+fi
+fn_once "G lookup named once" 1 "no such host" agents/tmp/smoke-G.log
 
 if [ "$g_failures" -gt 0 ]; then
 	printf '%s check(s) failed\n' "$g_failures"

@@ -169,7 +169,9 @@ func Listen(ctx context.Context, cfg Config, localAddr string, errOut io.Writer)
 			return fmt.Errorf("local listener: %w", err)
 		}
 		go func() {
-			if err := Serve(ctx, cfg, conn, errOut); err != nil {
+			// ErrNoServer is already reported candidate by candidate; a second
+			// "no usable server" line says nothing new.
+			if err := Serve(ctx, cfg, conn, errOut); err != nil && !errors.Is(err, ErrNoServer) {
 				_, _ = fmt.Fprintf(errOut, "[error] %s\n", err)
 			}
 		}()
@@ -183,6 +185,15 @@ func probe(ctx context.Context, cfg Config, clientBanner string, errOut io.Write
 		if cfg.Verbose {
 			_, _ = fmt.Fprintf(errOut, format+"\n", args...)
 		}
+	}
+
+	// One lookup before either dial: both ports are the same name, so a name that
+	// does not resolve is one failure, not two.
+	if _, err := net.LookupHost(cfg.Host); err != nil {
+		if !cfg.Silent {
+			_, _ = fmt.Fprintf(errOut, "%s: no usable server: %v\n", cfg.Host, err)
+		}
+		return nil, ErrNoServer
 	}
 
 	// The outer bound on the probe: the connect timeout plus the longest handshake
