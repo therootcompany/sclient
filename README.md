@@ -75,6 +75,10 @@ sclient [flags] <remote> <local>
   - `--servername <domain>` force SNI (default is the domain, or none for IP or '')
   - `--alpn <protocol-list>` acceptable protocols, ex: `h2,http/1.1` `ssh`
   - `--stderr <path>` a file or device, ex `sclient.log`, `/dev/tty`, `/dev/null`
+  - `--tcp-timeout <seconds>` seconds for the TCP connect, DNS included
+    (0 = default, 5s)
+  - `--tls-timeout <seconds>` seconds for the TLS handshake, from the connect
+    (0 = auto, 3x connection time)
 - remote
   - must have servername (i.e. example.com)
   - port is optional (default is 443)

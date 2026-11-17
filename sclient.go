@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Tunnel specifies which remote encrypted connection to make available as a plain connection locally.
@@ -23,13 +24,13 @@ type Tunnel struct {
 	NextProtos         []string
 	ServerName         string
 	Silent             bool
+	TCPTimeout         time.Duration
+	TLSTimeout         time.Duration
 }
 
-// tlsConfig is the client config for one dial to the remote. The remote address
-// is the SNI name unless --servername says otherwise; an IP carries no SNI.
 func (t *Tunnel) tlsConfig() *tls.Config {
 	serverName := t.ServerName
-	if serverName == "" && net.ParseIP(t.RemoteAddress) == nil {
+	if serverName == "" && net.ParseIP(t.RemoteAddress) == nil { // an IP has no name
 		serverName = t.RemoteAddress
 	}
 	return &tls.Config{
@@ -37,6 +38,45 @@ func (t *Tunnel) tlsConfig() *tls.Config {
 		NextProtos:         t.NextProtos,
 		InsecureSkipVerify: t.InsecureSkipVerify,
 	}
+}
+
+const (
+	defaultTCPDeadline   = 5 * time.Second
+	minHandshakeDeadline = 150 * time.Millisecond
+	handshakeMultiplier  = 3
+)
+
+func (t *Tunnel) handshakeDeadline(connect time.Duration) time.Duration {
+	if t.TLSTimeout > 0 {
+		return t.TLSTimeout
+	}
+	return max(handshakeMultiplier*connect, minHandshakeDeadline)
+}
+
+// dial connects, then handshakes, each under its own deadline.
+func (t *Tunnel) dial(ctx context.Context, remote string) (*tls.Conn, error) {
+	connect := t.TCPTimeout
+	if connect <= 0 {
+		connect = defaultTCPDeadline
+	}
+	ctx, cancel := context.WithTimeout(ctx, connect+t.handshakeDeadline(connect))
+	defer cancel()
+
+	start := time.Now()
+	conn, err := (&net.Dialer{Timeout: connect}).DialContext(ctx, "tcp", remote)
+	if err != nil {
+		return nil, err
+	}
+
+	handshake, cancelHandshake := context.WithTimeout(ctx, t.handshakeDeadline(time.Since(start)))
+	defer cancelHandshake()
+
+	remoteConn := tls.Client(conn, t.tlsConfig())
+	if err := remoteConn.HandshakeContext(handshake); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return remoteConn, nil
 }
 
 // DialAndListen runs the tunnel with a context that is never canceled.
@@ -69,7 +109,7 @@ func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 	// use net.Conn
 	// Probe once before binding, so the operator knows early whether the remote is
 	// alive; each local connection dials on its own.
-	probeConn, err := tls.Dial("tcp", remote, t.tlsConfig())
+	probeConn, err := t.dial(ctx, remote)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
@@ -178,7 +218,7 @@ func pipeToLocal(remote io.Reader, local io.WriteCloser) error {
 }
 
 func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn netReadWriteCloser) {
-	remoteConn, err := tls.Dial("tcp", remote, t.tlsConfig())
+	remoteConn, err := t.dial(ctx, remote)
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)

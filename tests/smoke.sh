@@ -74,7 +74,30 @@ fn_listener() (
 	esac
 )
 
+fn_timeout() (
+	# 192.0.2.1 (RFC 5180) is unroutable, so the connect waits for a deadline.
+	b_start=$(date +%s)
+	"$g_bin" --tcp-timeout 1 192.0.2.1:443 - < /dev/null > /dev/null 2>&1
+	b_elapsed=$(( $(date +%s) - b_start ))
+	if test "$b_elapsed" -ge 3; then
+		printf 'timeout: --tcp-timeout 1 took %ss, want under 3s\n' "$b_elapsed" >&2
+		exit 1
+	fi
+	printf 'timeout: --tcp-timeout 1 cut the connect off in %ss\n' "$b_elapsed"
+
+	# No flag: the 5s default must still bound the dial.
+	b_start=$(date +%s)
+	"$g_bin" 192.0.2.1:443 - < /dev/null > /dev/null 2>&1
+	b_elapsed=$(( $(date +%s) - b_start ))
+	if test "$b_elapsed" -lt 4 || test "$b_elapsed" -ge 10; then
+		printf 'timeout: the default took %ss, want about 5s\n' "$b_elapsed" >&2
+		exit 1
+	fi
+	printf 'timeout: the default held at %ss\n' "$b_elapsed"
+)
+
 go build -o "$g_bin" ./cmd/sclient
 fn_pipe
 fn_stdin
 fn_listener
+fn_timeout

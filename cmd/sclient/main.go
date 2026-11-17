@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/therootcompany/sclient"
 )
@@ -55,6 +56,8 @@ func main() {
 	var servername string
 	var silent bool
 	var stderrPath string
+	var tcpTimeout float64
+	var tlsTimeout float64
 
 	flag.Usage = usage
 
@@ -65,6 +68,8 @@ func main() {
 	flag.BoolVar(&insecure, "insecure", false, "ignore bad TLS/SSL/HTTPS certificates")
 	flag.BoolVar(&silent, "silent", false, "less verbose output")
 	flag.StringVar(&stderrPath, "stderr", "", "a file or device, ex sclient.log or /dev/null")
+	flag.Float64Var(&tcpTimeout, "tcp-timeout", 0, "seconds for the TCP connect, DNS included (0 = default, 5s)")
+	flag.Float64Var(&tlsTimeout, "tls-timeout", 0, "seconds for the TLS handshake, from the connect (0 = auto, 3x connection time)")
 
 	flag.Parse()
 
@@ -94,6 +99,8 @@ func main() {
 		ServerName:         servername,
 		Silent:             silent,
 		NextProtos:         alpns,
+		TCPTimeout:         toSeconds(tcpTimeout),
+		TLSTimeout:         toSeconds(tlsTimeout),
 	}
 
 	remote := strings.Split(remotestr, ":")
@@ -146,6 +153,13 @@ func main() {
 		//usage()
 		//os.Exit(6)
 	}
+}
+
+func toSeconds(raw float64) time.Duration {
+	if raw <= 0 {
+		return 0
+	}
+	return time.Duration(raw * float64(time.Second))
 }
 
 // parsers "a,b,c" "a b c" and "a, b, c" all the same

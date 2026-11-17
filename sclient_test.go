@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -99,9 +100,6 @@ func remoteOf(t *testing.T) (string, int, func(), *atomic.Int32) {
 	return host, port, shutdown, conns
 }
 
-// The remote address is the SNI name. --servername overrides it, and an IP
-// remote has no name to send. Without this, `sclient example.com 3000` dies on
-// "tls: either ServerName or InsecureSkipVerify must be specified".
 func TestTLSConfigServerName(t *testing.T) {
 	cases := []struct {
 		remote     string
@@ -434,6 +432,57 @@ func TestDialAndListenContextAlreadyCanceled(t *testing.T) {
 		return
 	}
 	_ = rebind.Close()
+}
+
+// 0 means 3x the connect, floored at 150ms; an explicit timeout wins.
+func TestHandshakeDeadline(t *testing.T) {
+	cases := []struct {
+		tlsTimeout time.Duration
+		connect    time.Duration
+		want       time.Duration
+	}{
+		{0, time.Millisecond, minHandshakeDeadline},                   // auto, floored
+		{0, 100 * time.Millisecond, 300 * time.Millisecond},           // auto, 3x the connect
+		{300 * time.Millisecond, time.Second, 300 * time.Millisecond}, // explicit wins
+		{-1, time.Second, 3 * time.Second},                            // nonsense falls back
+	}
+	for _, c := range cases {
+		tun := &Tunnel{TLSTimeout: c.tlsTimeout}
+		if got := tun.handshakeDeadline(c.connect); got != c.want {
+			t.Errorf("handshakeDeadline(timeout %s, connect %s): got %s, want %s",
+				c.tlsTimeout, c.connect, got, c.want)
+		}
+	}
+}
+
+// A server that accepts the connection but never handshakes must time out.
+func TestDialHonorsTLSDeadline(t *testing.T) {
+	blackhole, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("blackhole: %v", err)
+	}
+	defer blackhole.Close()
+
+	addr := blackhole.Addr().String()
+	for _, tun := range []*Tunnel{
+		{ServerName: "localhost"},                                     // auto: the 150ms floor
+		{ServerName: "localhost", TLSTimeout: 100 * time.Millisecond}, // explicit
+	} {
+		start := time.Now()
+		conn, err := tun.dial(context.Background(), addr)
+		elapsed := time.Since(start)
+		if err == nil {
+			_ = conn.Close()
+			t.Fatalf("dial(%s): the handshake never timed out", addr)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("dial: got %v, want a deadline exceeded", err)
+		}
+		// The handshake deadline fired, not the 5s connect default.
+		if elapsed > time.Second {
+			t.Errorf("dial: took %s, want well under the %s connect default", elapsed, defaultTCPDeadline)
+		}
+	}
 }
 
 type stubConn struct {
