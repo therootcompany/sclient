@@ -38,6 +38,9 @@ type MainConfig struct {
 	insecure   bool
 	servername string
 	silent     bool
+	verbose    bool
+	ssh        bool
+	sshPort    int
 	stderr     string
 	tcpTimeout float64
 	tlsTimeout float64
@@ -103,6 +106,9 @@ func usage(fs *flag.FlagSet) {
 	_, _ = fmt.Fprintf(w, "      (example.com:443 <= localhost:3000)\n")
 	_, _ = fmt.Fprintf(w, "\n   ex: %s example.com:8443 0.0.0.0:4080\n", name)
 	_, _ = fmt.Fprintf(w, "\n   ex: %s example.com:443 -\n", name)
+	_, _ = fmt.Fprintf(w, "\n   ex: %s --ssh-port 22 example.com:443 localhost:3000\n", name)
+	_, _ = fmt.Fprintf(w, "      (SSH mode: the plain port and the TLS port are probed at once)\n")
+	_, _ = fmt.Fprintf(w, "\n   ex: ssh -o ProxyCommand='%s --ssh-port %%p %%h:443' example.com\n", name)
 	_, _ = fmt.Fprintf(w, "\nFLAGS\n")
 	fs.PrintDefaults()
 	_, _ = fmt.Fprintln(w)
@@ -125,6 +131,10 @@ func main() {
 	fs.StringVar(&cfg.servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
 	fs.BoolVar(&cfg.insecure, "insecure", false, "ignore bad TLS (SSL/HTTPS) certificates")
 	fs.BoolVar(&cfg.silent, "silent", false, "less verbose output")
+	fs.BoolVar(&cfg.verbose, "v", false, "alias of --verbose")
+	fs.BoolVar(&cfg.verbose, "verbose", false, "show what each dial did (SSH mode: every candidate and its banner)")
+	fs.BoolVar(&cfg.ssh, "ssh", false, "SSH mode shorthand for --ssh-port 22")
+	fs.IntVar(&cfg.sshPort, "ssh-port", 0, "plain SSH port to probe alongside <remote>; turns on SSH mode (0 = plain TLS tunnel)")
 	fs.StringVar(&cfg.stderr, "stderr", "", "where diagnostics go, ex sclient.log or /dev/null")
 	fs.Float64Var(&cfg.tcpTimeout, "tcp-timeout", 0, "seconds for the TCP connect, DNS included (0 = default, 5s)")
 	fs.Float64Var(&cfg.tlsTimeout, "tls-timeout", 0, "seconds for the TLS handshake (0 = auto, 3x the connect)")
@@ -153,6 +163,15 @@ func main() {
 	// stdout is the payload; --stderr says where the rest goes.
 	os.Stderr = stderrTarget(cfg.stderr)
 
+	// Visit sees only the flags the operator gave, so it runs after Parse.
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	sshPort, err := sshMode(cfg.ssh, cfg.sshPort, set["ssh-port"])
+	if err != nil {
+		failUsage(fs, err.Error())
+	}
+
 	switch args := fs.Args(); len(args) {
 	case 2:
 		cfg.remote = args[0]
@@ -173,9 +192,11 @@ func main() {
 		InsecureSkipVerify: cfg.insecure,
 		ServerName:         cfg.servername,
 		Silent:             cfg.silent,
-		NextProtos:         parseOptionList(cfg.alpn),
+		Verbose:            cfg.verbose,
+		NextProtos:         alpnList(cfg.alpn, set["alpn"], sshPort > 0),
 		TCPTimeout:         toSeconds(cfg.tcpTimeout),
 		TLSTimeout:         toSeconds(cfg.tlsTimeout),
+		SSHPort:            sshPort,
 	}
 
 	remoteHost, remotePort, err := remoteAddr(cfg.remote)
@@ -203,9 +224,48 @@ func main() {
 	defer stop()
 
 	if err := tun.DialAndListenContext(ctx); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "%s\n", err)
+		// SSH mode already named every candidate that lost.
+		if !errors.Is(err, sclient.ErrNoServer) {
+			_, _ = fmt.Fprintf(os.Stderr, "%s: %s\n", tun.RemoteAddress, err)
+		}
 		os.Exit(1)
 	}
+}
+
+// sshMode resolves --ssh against --ssh-port. Naming a port is the mode; --ssh
+// is the shorthand for 22, and an explicit port always wins. A named zero is a
+// mistake, not "off".
+func sshMode(ssh bool, sshPort int, named bool) (int, error) {
+	if sshPort < 0 || sshPort > 65535 {
+		return 0, fmt.Errorf("--ssh-port must be 1-65535")
+	}
+	if sshPort > 0 {
+		return sshPort, nil
+	}
+	if named {
+		return 0, errors.New("--ssh-port must be 1-65535 (omit it for a plain TLS tunnel)")
+	}
+	if ssh {
+		return 22, nil
+	}
+	return 0, nil
+}
+
+// alpnList is --alpn as offered. In SSH mode an unset list takes "ssh"; an
+// explicit empty one offers nothing, which turns the ALPN gate off. In plain
+// mode an unset list is left unset so the tunnel can sniff the local side.
+func alpnList(raw string, explicit, sshMode bool) []string {
+	list := parseOptionList(raw)
+	if list != nil {
+		return list
+	}
+	if explicit {
+		return []string{}
+	}
+	if sshMode {
+		return []string{"ssh"}
+	}
+	return nil
 }
 
 // remoteAddr parses <host> or <host>:<port>; a bare host gets port 443.
