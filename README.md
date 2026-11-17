@@ -75,7 +75,7 @@ sclient [flags] <remote> <local>
   - `-k`, `--insecure` ignore invalid TLS (SSL/HTTPS) certificates
   - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
     not use this option)
-  - `--alpn <protocol-list>`
+  - `--alpn <protocol-list>` acceptable protocols, ex: `h2,http/1.1` `ssh`
   - `--tcp-timeout <seconds>` deadline for the TCP connect, DNS included.
     Default 5; `0` means "the default", not "unlimited"
   - `--tls-timeout <seconds>` deadline for the TLS handshake, measured from the
@@ -88,13 +88,13 @@ sclient [flags] <remote> <local>
   - must have port (i.e. 3000)
 
   -alpn string
-    	acceptable protocols, ex: 'h2,http/1.1' 'http/1.1' (default) 'ssh' (default "http/1.1")
+    	acceptable protocols, ex: 'h2,http/1.1' 'ssh' (unset: no ALPN is offered)
   -insecure
     	ignore bad TLS/SSL/HTTPS certificates
   -k	alias for --insecure
   -s	alias of --silent
   -servername string
-    	specify a servername different from <remote> (to disable SNI use an IP as <remote> and do use this option)
+    	specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)
   -silent
     	less verbose output
   -tcp-timeout float
