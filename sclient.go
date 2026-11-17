@@ -1,6 +1,7 @@
 package sclient
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -24,9 +25,17 @@ type Tunnel struct {
 	Silent             bool
 }
 
-// DialAndListen will create a test TLS connection to the remote address and then
-// begin listening locally. Each local connection will result in a separate remote connection.
+// DialAndListen runs the tunnel with a context that is never canceled.
 func (t *Tunnel) DialAndListen() error {
+	return t.DialAndListenContext(context.Background())
+}
+
+// DialAndListenContext connects to the remote address, then listens locally;
+// each local connection gets its own remote connection. It runs until the tunnel
+// finishes, fails, or ctx is canceled.
+//
+// Canceling ctx closes the listener, ends every open connection, and returns nil.
+func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 	remote := t.RemoteAddress + ":" + strconv.Itoa(t.RemotePort)
 	conn, err := tls.Dial("tcp", remote,
 		&tls.Config{
@@ -50,8 +59,8 @@ func (t *Tunnel) DialAndListen() error {
 		} else {
 			name = "stdin"
 		}
-		conn := &stdnet{os.Stdin, os.Stdout, &stdaddr{net.UnixAddr{Name: name, Net: network}}}
-		t.handleConnection(remote, conn)
+		stdioConn := &stdnet{os.Stdin, os.Stdout, &stdaddr{net.UnixAddr{Name: name, Net: network}}}
+		t.handleConnection(ctx, remote, stdioConn)
 		return nil
 	}
 
@@ -68,12 +77,22 @@ func (t *Tunnel) DialAndListen() error {
 			t.RemoteAddress, t.RemotePort, t.LocalAddress, t.LocalPort)
 	}
 
+	// Canceling ctx closes the listener, so Accept returns. Connections already
+	// running end on the same ctx.
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			return fmt.Errorf("local listener: %w", err)
 		}
-		go t.handleConnection(remote, conn)
+		go t.handleConnection(ctx, remote, conn)
 	}
 }
 
@@ -146,7 +165,7 @@ func pipeToLocal(remote io.Reader, local io.WriteCloser) error {
 	return local.Close()
 }
 
-func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
+func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn netReadWriteCloser) {
 	remoteConn, err := tls.Dial("tcp", remote,
 		&tls.Config{
 			ServerName:         t.ServerName,
@@ -170,7 +189,21 @@ func (t *Tunnel) handleConnection(remote string, conn netReadWriteCloser) {
 		}
 	}
 
-	if err := pipe(conn, remoteConn); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[copy error] %s\n", err)
+	// pipe() copies both directions and closes both when either side ends.
+	// Canceling ctx closes both early.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := pipe(conn, remoteConn); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[copy error] %s\n", err)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		_ = conn.Close()
+		_ = remoteConn.Close()
+		<-done
 	}
 }

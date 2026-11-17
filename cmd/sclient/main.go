@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/therootcompany/sclient"
 )
@@ -134,7 +137,11 @@ func main() {
 		}
 	}
 
-	if err := tun.DialAndListen(); err != nil {
+	// SIGINT or SIGTERM cancels ctx, which stops the tunnel.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := tun.DialAndListenContext(ctx); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "%s\n", err)
 		//usage()
 		//os.Exit(6)

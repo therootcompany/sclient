@@ -2,6 +2,7 @@ package sclient
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -225,7 +226,114 @@ func TestDialAndListenListener(t *testing.T) {
 	}
 }
 
-// stubConn is the local side: stdin in, stdout out.
+// localPort returns a free TCP port on 127.0.0.1.
+func localPort(t *testing.T) *net.TCPAddr {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("local port: %v", err)
+	}
+	addr := ln.Addr().(*net.TCPAddr)
+	_ = ln.Close()
+	return addr
+}
+
+// Canceling ctx stops the tunnel and frees the port.
+func TestDialAndListenContextStops(t *testing.T) {
+	host, port, shutdown := remoteOf(t)
+	defer shutdown()
+
+	local := localPort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	tun := &Tunnel{
+		RemoteAddress:      host,
+		RemotePort:         port,
+		LocalAddress:       "127.0.0.1",
+		LocalPort:          local.Port,
+		InsecureSkipVerify: true,
+		Silent:             true,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- tun.DialAndListenContext(ctx) }()
+
+	var conn net.Conn
+	var err error
+	for attempt := 0; attempt < bindTries && conn == nil; attempt++ {
+		conn, err = net.Dial("tcp", local.String())
+		if err != nil {
+			time.Sleep(bindWait)
+		}
+	}
+	if conn == nil {
+		cancel()
+		t.Fatalf("listener: nothing bound %s", local.String())
+	}
+	defer conn.Close()
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+	case <-time.After(noHang):
+		t.Fatal("cancel: the listener never came down")
+	}
+
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Error("cancel: the session in flight stayed open")
+	}
+
+	rebind, err := net.Listen("tcp", local.String())
+	if err != nil {
+		t.Errorf("cancel: %s is still bound: %v", local.String(), err)
+		return
+	}
+	_ = rebind.Close()
+}
+
+// An already-canceled context returns at once and leaves nothing bound.
+func TestDialAndListenContextAlreadyCanceled(t *testing.T) {
+	host, port, shutdown := remoteOf(t)
+	defer shutdown()
+
+	local := localPort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tun := &Tunnel{
+		RemoteAddress:      host,
+		RemotePort:         port,
+		LocalAddress:       "127.0.0.1",
+		LocalPort:          local.Port,
+		InsecureSkipVerify: true,
+		Silent:             true,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- tun.DialAndListenContext(ctx) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("already canceled: %v", err)
+		}
+	case <-time.After(noHang):
+		t.Fatal("already canceled: it did not return")
+	}
+
+	rebind, err := net.Listen("tcp", local.String())
+	if err != nil {
+		t.Errorf("already canceled: %s is bound: %v", local.String(), err)
+		return
+	}
+	_ = rebind.Close()
+}
+
 type stubConn struct {
 	in     *bytes.Buffer
 	out    *bytes.Buffer
