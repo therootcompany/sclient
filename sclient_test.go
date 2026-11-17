@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -29,9 +30,9 @@ const (
 )
 
 // tlsServer starts a TLS server on 127.0.0.1 that reads a request to EOF before
-// answering - the behavior the pumps have to satisfy. It returns the address and
-// a function to shut the server down.
-func tlsServer(t *testing.T) (string, func()) {
+// answering - the behavior the pumps have to satisfy. It returns the address, a
+// shutdown function, and the number of connections it has accepted.
+func tlsServer(t *testing.T) (string, func(), *atomic.Int32) {
 	t.Helper()
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -59,12 +60,14 @@ func tlsServer(t *testing.T) (string, func()) {
 		t.Fatalf("tls server: listen: %v", err)
 	}
 
+	conns := &atomic.Int32{}
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
+			conns.Add(1)
 			go func() {
 				defer conn.Close()
 				if _, err := io.ReadAll(conn); err != nil {
@@ -75,13 +78,13 @@ func tlsServer(t *testing.T) (string, func()) {
 		}
 	}()
 
-	return ln.Addr().String(), func() { _ = ln.Close() }
+	return ln.Addr().String(), func() { _ = ln.Close() }, conns
 }
 
-func remoteOf(t *testing.T) (string, int, func()) {
+func remoteOf(t *testing.T) (string, int, func(), *atomic.Int32) {
 	t.Helper()
 
-	addr, shutdown := tlsServer(t)
+	addr, shutdown, conns := tlsServer(t)
 	host, portText, err := net.SplitHostPort(addr)
 	if err != nil {
 		shutdown()
@@ -92,11 +95,11 @@ func remoteOf(t *testing.T) (string, int, func()) {
 		shutdown()
 		t.Fatalf("remote: %v", err)
 	}
-	return host, port, shutdown
+	return host, port, shutdown, conns
 }
 
 func TestPipeEndsBothStreams(t *testing.T) {
-	addr, shutdown := tlsServer(t)
+	addr, shutdown, _ := tlsServer(t)
 	defer shutdown()
 
 	remote, err := tls.Dial("tcp", addr, &tls.Config{InsecureSkipVerify: true})
@@ -126,7 +129,7 @@ func TestPipeEndsBothStreams(t *testing.T) {
 }
 
 func TestDialAndListenStdio(t *testing.T) {
-	host, port, shutdown := remoteOf(t)
+	host, port, shutdown, conns := remoteOf(t)
 	defer shutdown()
 
 	inRead, inWrite, err := os.Pipe()
@@ -173,10 +176,15 @@ func TestDialAndListenStdio(t *testing.T) {
 	if string(got) != reply {
 		t.Errorf("stdio: got %q, want %q", string(got), reply)
 	}
+
+	// stdio has one connection, one dial: no pre-flight probe.
+	if count := conns.Load(); count != 1 {
+		t.Errorf("stdio: the remote saw %d connections, want 1", count)
+	}
 }
 
 func TestDialAndListenListener(t *testing.T) {
-	host, port, shutdown := remoteOf(t)
+	host, port, shutdown, conns := remoteOf(t)
 	defer shutdown()
 
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
@@ -224,6 +232,11 @@ func TestDialAndListenListener(t *testing.T) {
 	if string(got) != reply {
 		t.Errorf("listener: got %q, want %q", string(got), reply)
 	}
+
+	// The pre-flight probe, then the client.
+	if count := conns.Load(); count != 2 {
+		t.Errorf("listener: the remote saw %d connections, want 2", count)
+	}
 }
 
 // localPort returns a free TCP port on 127.0.0.1.
@@ -241,7 +254,7 @@ func localPort(t *testing.T) *net.TCPAddr {
 
 // Canceling ctx stops the tunnel and frees the port.
 func TestDialAndListenContextStops(t *testing.T) {
-	host, port, shutdown := remoteOf(t)
+	host, port, shutdown, _ := remoteOf(t)
 	defer shutdown()
 
 	local := localPort(t)
@@ -298,7 +311,7 @@ func TestDialAndListenContextStops(t *testing.T) {
 
 // An already-canceled context returns at once and leaves nothing bound.
 func TestDialAndListenContextAlreadyCanceled(t *testing.T) {
-	host, port, shutdown := remoteOf(t)
+	host, port, shutdown, _ := remoteOf(t)
 	defer shutdown()
 
 	local := localPort(t)

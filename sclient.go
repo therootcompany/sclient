@@ -37,20 +37,8 @@ func (t *Tunnel) DialAndListen() error {
 // Canceling ctx closes the listener, ends every open connection, and returns nil.
 func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 	remote := t.RemoteAddress + ":" + strconv.Itoa(t.RemotePort)
-	conn, err := tls.Dial("tcp", remote,
-		&tls.Config{
-			ServerName:         t.ServerName,
-			NextProtos:         t.NextProtos,
-			InsecureSkipVerify: t.InsecureSkipVerify,
-		})
 
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
-	} else {
-		_ = conn.Close()
-	}
-
-	// use stdin/stdout
+	// use stdin/stdout: one connection, one dial
 	if t.LocalAddress == "-" || t.LocalAddress == "|" {
 		var name string
 		network := "stdio"
@@ -65,6 +53,21 @@ func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 	}
 
 	// use net.Conn
+	// Probe once before binding, so the operator knows early whether the remote is
+	// alive; each local connection dials on its own.
+	probeConn, err := tls.Dial("tcp", remote,
+		&tls.Config{
+			ServerName:         t.ServerName,
+			NextProtos:         t.NextProtos,
+			InsecureSkipVerify: t.InsecureSkipVerify,
+		})
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
+	} else {
+		_ = probeConn.Close()
+	}
+
 	local := t.LocalAddress + ":" + strconv.Itoa(t.LocalPort)
 	ln, err := net.Listen("tcp", local)
 	if err != nil {
