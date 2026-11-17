@@ -79,6 +79,10 @@ func (t *Tunnel) dialTLS(remote string) (*tls.Conn, error) {
 	connect := t.connectClock()
 	ctx, cancel := context.WithTimeout(context.Background(), connect+t.handshakeClock(connect))
 	defer cancel()
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		return nil, fmt.Errorf("remote %q: %w", remote, err)
+	}
 	d := &net.Dialer{Timeout: connect, KeepAlive: 30 * time.Second}
 	start := time.Now()
 	conn, err := d.DialContext(ctx, "tcp", remote)
@@ -87,7 +91,7 @@ func (t *Tunnel) dialTLS(remote string) (*tls.Conn, error) {
 	}
 	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, t.handshakeClock(time.Since(start)))
 	defer cancelHandshake()
-	tc := tls.Client(conn, t.tlsConfig())
+	tc := tls.Client(conn, t.tlsConfig(host))
 	if err := tc.HandshakeContext(handshakeCtx); err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -95,10 +99,17 @@ func (t *Tunnel) dialTLS(remote string) (*tls.Conn, error) {
 	return tc, nil
 }
 
-// tlsConfig is the client config for one remote dial.
-func (t *Tunnel) tlsConfig() *tls.Config {
+// tlsConfig builds the client config for one remote. The operator's
+// --servername is the name to send as SNI and verify against; when it is
+// empty the remote host is used, which is what tls.Dial does when ServerName
+// is left unset.
+func (t *Tunnel) tlsConfig(host string) *tls.Config {
+	serverName := t.ServerName
+	if serverName == "" {
+		serverName = host
+	}
 	return &tls.Config{
-		ServerName:         t.ServerName,
+		ServerName:         serverName,
 		NextProtos:         t.NextProtos,
 		InsecureSkipVerify: t.InsecureSkipVerify,
 	}
