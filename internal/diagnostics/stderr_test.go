@@ -1,16 +1,16 @@
-package main
+package diagnostics
 
 import (
 	"os"
 	"testing"
 )
 
-func TestStderrTarget(t *testing.T) {
-	path := t.TempDir() + "/sclient.log"
+func TestTarget(t *testing.T) {
+	path := t.TempDir() + "/diagnostics.log"
 
 	for _, want := range []string{"", "/dev/null", path} {
-		if got := stderrTarget(want); got == nil {
-			t.Errorf("stderrTarget(%q): nil", want)
+		if got := Target("test", want); got == nil {
+			t.Errorf("Target(%q): nil", want)
 		}
 	}
 
@@ -18,13 +18,13 @@ func TestStderrTarget(t *testing.T) {
 		t.Errorf("log file was not created: %v", err)
 	}
 
-	if got := stderrTarget(path + "/missing.log"); got != os.Stderr {
-		t.Errorf("stderrTarget of an unopenable path: got %q, want os.Stderr", got.Name())
+	if got := Target("test", path+"/missing.log"); got != os.Stderr {
+		t.Errorf("Target of an unopenable path: got %q, want os.Stderr", got.Name())
 	}
 }
 
-func TestMaybeSSHControlMasterNull(t *testing.T) {
-	if maybeSSHControlMasterNull(os.Stdin, os.Stdout, os.Stderr) {
+func TestSSHNullsStderr(t *testing.T) {
+	if sshNullsStderr(os.Stdin, os.Stdout, os.Stderr) {
 		t.Error("a unit test is not a ProxyCommand")
 	}
 
@@ -41,7 +41,7 @@ func TestMaybeSSHControlMasterNull(t *testing.T) {
 	defer connRead.Close()
 	defer connWrite.Close()
 
-	if !maybeSSHControlMasterNull(connWrite, connWrite, devnull) {
+	if !sshNullsStderr(connWrite, connWrite, devnull) {
 		t.Error("fd 0 and fd 1 on pipes with /dev/null on fd 2 is a ProxyCommand")
 	}
 }

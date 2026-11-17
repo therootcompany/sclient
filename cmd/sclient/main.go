@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/therootcompany/sclient"
+	"github.com/therootcompany/sclient/internal/diagnostics"
 )
 
 const name = "sclient"
@@ -161,7 +162,7 @@ func main() {
 	}
 
 	// stdout is the payload; --stderr says where the rest goes.
-	os.Stderr = stderrTarget(cfg.stderr)
+	os.Stderr = diagnostics.Target(name, cfg.stderr)
 
 	// Visit sees only the flags the operator gave, so it runs after Parse.
 	set := map[string]bool{}
