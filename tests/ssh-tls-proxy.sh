@@ -104,7 +104,8 @@ if printf 'SSH-2.0-SmokeClient_1.0\r\nBYE\r\n' |
 else
 	printf 'ok   C no usable server (exit 1)\n'
 fi
-fn_check "C both candidates named" "no usable server" agents/tmp/proxy-C.log
+fn_check "C both candidates named" "ssh-tls-proxy: no usable server" agents/tmp/proxy-C.log
+fn_check "C close line names the ports" 'Connection closed by "127.0.0.1" ports' agents/tmp/proxy-C.log
 
 # D: a bad port is a usage error (2), -V is a version and exit 0.
 if "$g_bin" --ssh-port 0 127.0.0.1:443 >/dev/null 2>&1; then

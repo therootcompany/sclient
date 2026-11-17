@@ -34,6 +34,9 @@ type Tunnel struct {
 	// SSHPort turns on SSH mode: the plain SSH port probed alongside
 	// RemoteAddress:RemotePort. Zero is a plain TLS tunnel.
 	SSHPort int
+	// Name is the command reporting a failed session, ex "ssh-tls-proxy".
+	// Empty means "sclient".
+	Name string
 }
 
 // serverName is the name the connection is for: ServerName, or the remote
@@ -133,6 +136,7 @@ func (t *Tunnel) serveSSH(ctx context.Context) error {
 		InsecureSkipVerify: t.InsecureSkipVerify,
 		Verbose:            t.Verbose,
 		Silent:             t.Silent,
+		Name:               t.Name,
 	}
 
 	if t.LocalAddress == "-" || t.LocalAddress == "|" {

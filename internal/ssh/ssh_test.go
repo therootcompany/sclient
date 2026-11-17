@@ -416,6 +416,66 @@ func TestProbeBannerMismatch(t *testing.T) {
 	}
 }
 
+// The report of a session with no server names the command, then every candidate
+// that lost, and ends with ssh's own closing line and the ports that were tried.
+func TestProbeReportClosesLikeSSH(t *testing.T) {
+	tlsPort := sshEcho(t, "SSH-2.0-OpenSSH_9.6 host:other.example.net", "", "ssh", true)
+	sshPort := sshEcho(t, "SSH-2.0-OpenSSH_9.6 host:other.example.net", "", "", false)
+
+	cfg := loopbackConfig(tlsPort, sshPort)
+	cfg.Name = "ssh-tls-proxy"
+	cfg = cfg.resolved()
+
+	var report strings.Builder
+	_, err := probe(context.Background(), cfg, "SSH-2.0-client", &report)
+	if !errors.Is(err, ErrNoServer) {
+		t.Fatalf("probe: got %v, want ErrNoServer", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(report.String(), "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("report = %q, want a header, two candidates and the close line", report.String())
+	}
+	if lines[0] != "ssh-tls-proxy: no usable server" {
+		t.Errorf("header = %q, want the command named", lines[0])
+	}
+	for _, line := range lines[1:3] {
+		if !strings.HasPrefix(line, "  ") {
+			t.Errorf("candidate line %q, want it indented", line)
+		}
+	}
+	want := fmt.Sprintf(`ssh-tls-proxy: Connection closed by "localhost" ports [%d, %d]`, sshPort, tlsPort)
+	if lines[3] != want {
+		t.Errorf("close line = %q, want %q", lines[3], want)
+	}
+}
+
+// A name that does not resolve is reported before any dial, so the close line has
+// no host to name and no port that was tried.
+func TestProbeCloseLineWithoutAHost(t *testing.T) {
+	cfg := loopbackConfig(1, 1)
+	cfg.Host = "does-not-exist.invalid" // RFC 2606: never resolves
+	cfg = cfg.resolved()
+
+	var report strings.Builder
+	_, err := probe(context.Background(), cfg, "SSH-2.0-client", &report)
+	if !errors.Is(err, ErrNoServer) {
+		t.Fatalf("probe: got %v, want ErrNoServer", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(report.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("report = %q, want the cause and the close line", report.String())
+	}
+	if !strings.HasPrefix(lines[0], "sclient: no usable server: lookup does-not-exist.invalid") {
+		t.Errorf("cause line = %q, want the command named before the lookup", lines[0])
+	}
+	want := `sclient: Connection closed by "NO SUCH HOST" port [0]`
+	if lines[1] != want {
+		t.Errorf("close line = %q, want %q", lines[1], want)
+	}
+}
+
 // Naming the server makes the TLS probe fair game for an IP.
 func TestProbeTriesTLSForNamedIP(t *testing.T) {
 	tlsPort := sshEcho(t, "SSH-2.0-tls-server", "", "ssh", true)

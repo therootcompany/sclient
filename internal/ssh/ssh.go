@@ -34,6 +34,44 @@ import (
 // already written to errOut.
 var ErrNoServer = errors.New("no usable server")
 
+// CloseError is a session that never got a server. ssh prints
+// "Connection closed by UNKNOWN port 65535" when a ProxyCommand dies, so the
+// failure names the reason and every port that was tried in the same shape.
+type CloseError struct {
+	// Name is the command reporting it, "sclient" or "ssh-tls-proxy".
+	Name string
+	// Reason is the name dialled, or the cause that stands in for it: an
+	// unresolvable name has no host to name, so it says "NO SUCH HOST".
+	Reason string
+	// Ports are the ports actually dialled; none prints as port [0].
+	Ports []int
+	cause error
+}
+
+func (e CloseError) Error() string { return e.cause.Error() }
+
+func (e CloseError) Unwrap() error { return e.cause }
+
+// Line is the last line of a failed session, in ssh's own phrasing:
+// Connection closed by "example.com" ports [22, 443].
+func (e CloseError) Line() string {
+	ports := e.Ports
+	if len(ports) == 0 {
+		ports = []int{0}
+	}
+
+	parts := make([]string, len(ports))
+	for i, port := range ports {
+		parts[i] = strconv.Itoa(port)
+	}
+
+	word := "port"
+	if len(parts) > 1 {
+		word = "ports"
+	}
+	return fmt.Sprintf("%s: Connection closed by %q %s [%s]", e.Name, e.Reason, word, strings.Join(parts, ", "))
+}
+
 // Config is one probe. Zero values take the engine defaults.
 type Config struct {
 	Host               string   // the address both ports are dialled on
@@ -46,6 +84,9 @@ type Config struct {
 	InsecureSkipVerify bool
 	Verbose            bool
 	Silent             bool
+	// Name is the command reporting a failure, so the last line reads
+	// "sclient: Connection closed by ...". It defaults to "sclient".
+	Name string
 }
 
 const (
@@ -76,6 +117,9 @@ func (c Config) resolved() Config {
 	}
 	if c.ALPN == nil {
 		c.ALPN = []string{"ssh"}
+	}
+	if c.Name == "" {
+		c.Name = "sclient"
 	}
 	return c
 }
@@ -190,9 +234,7 @@ func probe(ctx context.Context, cfg Config, clientBanner string, errOut io.Write
 	// One lookup before either dial: both ports are the same name, so a name that
 	// does not resolve is one failure, not two.
 	if _, err := net.LookupHost(cfg.Host); err != nil {
-		if !cfg.Silent {
-			_, _ = fmt.Fprintf(errOut, "%s: no usable server: %v\n", cfg.Host, err)
-		}
+		reportClose(errOut, cfg, err, nil)
 		return nil, ErrNoServer
 	}
 
@@ -462,20 +504,55 @@ func relay(ctx context.Context, chosen *candidate, client *bufio.Reader, local n
 	return nil
 }
 
-// reportNoServer names every candidate and why it lost.
+// reportNoServer names every candidate and why it lost, then closes the session in
+// ssh's own words so "Connection closed by UNKNOWN port 65535" has a cause.
 func reportNoServer(cfg Config, ready, failed []*candidate, errOut io.Writer) {
 	if cfg.Silent {
 		return
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s: no usable server\n", cfg.Host)
+	fmt.Fprintf(&b, "%s: no usable server\n", cfg.Name)
 	for _, c := range ready {
 		fmt.Fprintf(&b, "  %s %s: %s\n", c.name, c.address, c.mismatch)
 	}
 	for _, c := range failed {
 		fmt.Fprintf(&b, "  %s %s: %v\n", c.name, c.address, c.err)
 	}
+	close := CloseError{Name: cfg.Name, Reason: cfg.Host, Ports: attemptedPorts(cfg), cause: ErrNoServer}
+	fmt.Fprintf(&b, "%s\n", close.Line())
 	fmt.Fprint(errOut, b.String())
+}
+
+// reportClose is the same report for a failure before any dial: the name did not
+// resolve, so there is no host to name and no port that was tried.
+func reportClose(errOut io.Writer, cfg Config, err error, ports []int) {
+	if cfg.Silent {
+		return
+	}
+	_, _ = fmt.Fprintf(errOut, "%s: no usable server: %s\n", cfg.Name, strings.ToLower(err.Error()))
+	close := CloseError{Name: cfg.Name, Reason: lookupReason(err), Ports: ports, cause: ErrNoServer}
+	_, _ = fmt.Fprintln(errOut, close.Line())
+}
+
+// attemptedPorts is every port this session was asked to dial: the plain port the
+// ProxyCommand passed as %p, and the TLS port on the address.
+func attemptedPorts(cfg Config) []int {
+	ports := []int{cfg.SSHPort}
+	if tryTLS(cfg) {
+		ports = append(ports, cfg.TLSPort)
+	}
+	return ports
+}
+
+// lookupReason is the short cause of a failed lookup: "lookup host: no such host"
+// becomes "NO SUCH HOST" - there is no host to name, so the cause takes its place.
+func lookupReason(err error) string {
+	text := err.Error()
+	index := strings.LastIndex(text, ": ")
+	if index < 0 {
+		return strings.ToUpper(text)
+	}
+	return strings.ToUpper(text[index+2:])
 }
 
 // closeOut lets a client waiting on the pipe see EOF when we give up.

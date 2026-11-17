@@ -187,6 +187,17 @@ Plain mode sniffs the local side: with no `--alpn`, an `SSH-` banner on the firs
 bytes means the client is ssh, so `ssh` is offered. The peek does not consume the
 banner.
 
+When neither port is usable the report names the command, every candidate and why
+it lost, and then closes the session in ssh's own words - so ssh's bare
+`Connection closed by UNKNOWN port 65535` has a cause:
+
+```text
+sclient: no usable server
+  tls example.com:443: negotiated ALPN "http/1.1", wanted one of [ssh]
+  ssh example.com:22: connect: connection refused
+sclient: Connection closed by "example.com" ports [22, 443]
+```
+
 # ssh-tls-proxy
 
 `ssh-tls-proxy` is the SSH-specific command: the same probe, without the TLS-tunnel
@@ -207,7 +218,9 @@ go build -o ./dist/ssh-tls-proxy ./cmd/ssh-tls-proxy/
 ```
 
 Exit codes match sclient's: 0 done, 1 failure (including no usable server, after
-naming every candidate and why it lost), 2 usage.
+naming every candidate and why it lost), 2 usage. Every failure report is prefixed
+with the command's own name, `ssh-tls-proxy:`, so a ProxyCommand's stderr is
+attributable.
 
 # API
 

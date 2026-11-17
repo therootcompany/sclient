@@ -161,6 +161,7 @@ func run(ctx context.Context, cfg MainConfig) error {
 		InsecureSkipVerify: cfg.insecure,
 		Verbose:            cfg.verbose,
 		Silent:             cfg.silent,
+		Name:               name,
 	}
 
 	if cfg.listen == "" {

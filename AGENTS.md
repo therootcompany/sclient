@@ -74,7 +74,10 @@ which to accept:
 - TLS that handshakes but will not negotiate the named ALPN has no ssh route for
   this name: it is closed at the handshake and never sees the banner.
 - Otherwise, if 22 answers with an SSH banner, it is plain ssh: use it.
-- Neither answers: no usable server, reported to the diagnostics destination.
+- Neither answers: no usable server, reported to the diagnostics destination. The
+  report starts with the command name and ends with ssh's own closing line,
+  `sclient: Connection closed by "<host>" ports [22, 443]` (`"NO SUCH HOST" port [0]`
+  when the name never resolved).
 
 Do not "simplify" this into trying one port and falling back to the other. The
 simultaneous probe plus the banner exchange is the feature.

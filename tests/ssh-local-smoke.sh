@@ -160,7 +160,8 @@ g_jobs="$g_jobs $job"
 fn_wait_up 3006
 printf 'SSH-2.0-SmokeClient_1.0\r\nBYE\r\n' | timeout 0.3 nc 127.0.0.1 3006 >/dev/null 2>&1 || true
 kill "$job" 2>/dev/null || true
-fn_check "E no usable server" "no usable server" agents/tmp/smoke-E.log
+fn_check "E no usable server" "sclient: no usable server" agents/tmp/smoke-E.log
+fn_check "E close line names the ports" 'Connection closed by "127.0.0.1" ports' agents/tmp/smoke-E.log
 
 # F: a named --ssh-port 0 is a usage error (2), not "off".
 if "$g_bin" --ssh-port 0 127.0.0.1:"$g_tls" 127.0.0.1:3007 >/dev/null 2>&1; then
@@ -180,6 +181,7 @@ else
 	printf 'ok   G unresolvable name (exit 1)\n'
 fi
 fn_once "G lookup named once" 1 "no such host" agents/tmp/smoke-G.log
+fn_check "G close line has no host" 'Connection closed by "NO SUCH HOST" port \[0\]' agents/tmp/smoke-G.log
 
 if [ "$g_failures" -gt 0 ]; then
 	printf '%s check(s) failed\n' "$g_failures"
