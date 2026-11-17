@@ -72,8 +72,7 @@ sclient [flags] <remote> <local>
 - flags
   - `-s`, `--silent` less verbose logging
   - `-k`, `--insecure` ignore invalid TLS (SSL/HTTPS) certificates
-  - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
-    not use this option)
+  - `--servername <domain>` force SNI (default is the domain, or none for IP or '')
   - `--alpn <protocol-list>` acceptable protocols, ex: `h2,http/1.1` `ssh`
   - `--stderr <path>` a file or device, ex `sclient.log`, `/dev/tty`, `/dev/null`
 - remote

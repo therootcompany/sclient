@@ -99,6 +99,30 @@ func remoteOf(t *testing.T) (string, int, func(), *atomic.Int32) {
 	return host, port, shutdown, conns
 }
 
+// The remote address is the SNI name. --servername overrides it, and an IP
+// remote has no name to send. Without this, `sclient example.com 3000` dies on
+// "tls: either ServerName or InsecureSkipVerify must be specified".
+func TestTLSConfigServerName(t *testing.T) {
+	cases := []struct {
+		remote     string
+		servername string
+		want       string
+	}{
+		{"example.com", "", "example.com"}, // the documented default
+		{"example.com", "other.example.net", "other.example.net"},
+		{"192.0.2.1", "", ""},                       // no SNI for an IP
+		{"192.0.2.1", "example.com", "example.com"}, // unless it is named
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		tun := &Tunnel{RemoteAddress: c.remote, ServerName: c.servername}
+		if got := tun.tlsConfig().ServerName; got != c.want {
+			t.Errorf("tlsConfig(remote %q, servername %q): got %q, want %q",
+				c.remote, c.servername, got, c.want)
+		}
+	}
+}
+
 func TestPipeEndsBothStreams(t *testing.T) {
 	addr, shutdown, _ := tlsServer(t)
 	defer shutdown()

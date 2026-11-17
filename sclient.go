@@ -25,10 +25,15 @@ type Tunnel struct {
 	Silent             bool
 }
 
-// tlsConfig is the client config for one dial to the remote.
+// tlsConfig is the client config for one dial to the remote. The remote address
+// is the SNI name unless --servername says otherwise; an IP carries no SNI.
 func (t *Tunnel) tlsConfig() *tls.Config {
+	serverName := t.ServerName
+	if serverName == "" && net.ParseIP(t.RemoteAddress) == nil {
+		serverName = t.RemoteAddress
+	}
 	return &tls.Config{
-		ServerName:         t.ServerName,
+		ServerName:         serverName,
 		NextProtos:         t.NextProtos,
 		InsecureSkipVerify: t.InsecureSkipVerify,
 	}
