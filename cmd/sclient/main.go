@@ -18,7 +18,12 @@ import (
 	"github.com/therootcompany/sclient"
 )
 
-const name = "sclient"
+const (
+	name         = "sclient"
+	licenseYear  = 2018
+	licenseOwner = "AJ ONeal"
+	licenseType  = "MIT or Apache-2.0"
+)
 
 const (
 	defaultRemotePort = 443
@@ -49,8 +54,21 @@ func shortCommit(c string) string {
 	return c[:min(len(c), 7)]
 }
 
+// copyrightYears prints a date like 2018-2026 or 2018-present, depending on available build info.
+func copyrightYears(buildDate string) string {
+	first := strconv.Itoa(licenseYear)
+
+	build, err := time.Parse(time.DateOnly, buildDate)
+	if err != nil || build.Year() < 1000 {
+		return first + "-present"
+	}
+	return first + "-" + strconv.Itoa(build.Year())
+}
+
 func printVersion(w io.Writer) {
-	_, _ = fmt.Fprintf(w, "%s %s (%s) %s\n", name, version, commit, date)
+	_, _ = fmt.Fprintf(w, "%s v%s %s (%s)\n", name, version, commit, date)
+	_, _ = fmt.Fprintf(w, "Copyright (C) %s %s\n", copyrightYears(date), licenseOwner)
+	_, _ = fmt.Fprintf(w, "Licensed under %s\n", licenseType)
 }
 
 // buildSetting returns one VCS setting, or "" when the binary has none.
@@ -128,11 +146,12 @@ func main() {
 	fs.StringVar(&cfg.stderr, "stderr", "", "where diagnostics go, ex sclient.log or /dev/null")
 	fs.Float64Var(&cfg.tcpTimeout, "tcp-timeout", 0, "seconds for the TCP connect, DNS included (0 = default, 5s)")
 	fs.Float64Var(&cfg.tlsTimeout, "tls-timeout", 0, "seconds for the TLS handshake (0 = auto, 3x the connect)")
+	_ = fs.Bool("V", false, "print the version and exit")
+	_ = fs.Bool("version", false, "alias of -V")
 	fs.Usage = func() { usage(fs) }
 
-	// Before parsing: -V and help survive junk arguments.
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+	for _, arg := range os.Args[1:] {
+		switch arg {
 		case "-V", "-version", "--version", "version":
 			printVersion(os.Stdout)
 			os.Exit(0)

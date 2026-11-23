@@ -96,7 +96,56 @@ fn_timeout() (
 	printf 'timeout: the default held at %ss\n' "$b_elapsed"
 )
 
+fn_help() (
+	b_help=$("$g_bin" --help)
+	case "$b_help" in
+		*-V*)
+			printf 'help: -V is in the flag list\n'
+			;;
+		*)
+			printf 'help: -V is not in the flag list\n' >&2
+			exit 1
+			;;
+	esac
+
+	b_version=$("$g_bin" -V)
+	case "$b_version" in
+		*sclient*Copyright*)
+			printf 'version: %s\n' "$b_version"
+			;;
+		*)
+			printf 'version: -V printed no version or copyright\n' >&2
+			exit 1
+			;;
+	esac
+
+	# -V is answered before anything is dialled or bound, wherever it sits.
+	b_anywhere=$("$g_bin" -k --version)
+	case "$b_anywhere" in
+		*"sclient v"*)
+			printf 'version: -V after another flag prints and exits\n'
+			;;
+		*)
+			printf 'version: -V after another flag printed nothing\n' >&2
+			exit 1
+			;;
+	esac
+
+	# -h is the flag package's own: no declaration, usage on stderr, exit 0.
+	b_h=$("$g_bin" -h 2>&1)
+	case "$b_h" in
+		*USAGE*)
+			printf 'help: -h works without a declaration\n'
+			;;
+		*)
+			printf 'help: -h printed no usage\n' >&2
+			exit 1
+			;;
+	esac
+)
+
 go build -o "$g_bin" ./cmd/sclient
+fn_help
 fn_pipe
 fn_stdin
 fn_listener

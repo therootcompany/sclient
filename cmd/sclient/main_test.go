@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
+	"io"
 	"strings"
 	"testing"
 )
@@ -18,6 +20,45 @@ func TestUsagePrintsVersionOnce(t *testing.T) {
 
 	if got := strings.Count(out.String(), version); got != 1 {
 		t.Errorf("usage printed the version %d times, want 1", got)
+	}
+}
+
+// --help is the flag package's own: it is not declared, and parse answers it
+// with ErrHelp. Declaring a "help" flag would take that special case away.
+func TestBuiltInHelp(t *testing.T) {
+	for _, arg := range []string{"-h", "-help", "--help"} {
+		fs := flag.NewFlagSet(name, flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+
+		if err := fs.Parse([]string{arg}); !errors.Is(err, flag.ErrHelp) {
+			t.Errorf("%q: got %v, want flag.ErrHelp", arg, err)
+		}
+	}
+
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse([]string{"--bogus"}); errors.Is(err, flag.ErrHelp) {
+		t.Error("an unknown flag is a usage error, not help")
+	}
+}
+
+// The copyright spans the license year to the build year, or to "present"
+// when the build carries no date.
+func TestCopyrightYears(t *testing.T) {
+	cases := []struct {
+		date string
+		want string
+	}{
+		{"2026-11-23", "2018-2026"},
+		{"", "2018-present"},
+		{"0001-01-01", "2018-present"},
+		{"not a date", "2018-present"},
+	}
+
+	for _, c := range cases {
+		if got := copyrightYears(c.date); got != c.want {
+			t.Errorf("copyrightYears(%q): got %q, want %q", c.date, got, c.want)
+		}
 	}
 }
 
