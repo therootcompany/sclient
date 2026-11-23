@@ -43,6 +43,18 @@ accept loop, the reporting, and the exit codes belong to the caller. Stdio is
 one dial with nothing to bind, so it needs no probe: `StdioConn("-")` is stdin
 and stdout as a `net.Conn`.
 
+# SSH mode
+
+Set `SSHPort` and the session changes shape: the name is dialled on the SSH port
+and the TLS port at the same time, the ALPN check and the RFC 4253 banner decide
+which of them is the SSH server for that name, and the local side is relayed onto
+the winner.
+
+	err := tun.ServeSSH(ctx, conn, os.Stderr)
+
+`ErrNoServer` means neither port was usable; the report of why each candidate
+lost has already been written to the `io.Writer` the caller handed in.
+
 # Deprecated
 
 `DialAndListen` is the v1.5.1 lifecycle in one call, progress lines on stderr.

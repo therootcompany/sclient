@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -348,6 +349,124 @@ func TestLocalAddr(t *testing.T) {
 		}
 		if host != c.host || port != c.port {
 			t.Errorf("localAddr(%q): got %q:%d, want %q:%d", c.in, host, port, c.host, c.port)
+		}
+	}
+}
+
+// SSH mode through run(): the listener is the command's, the session is the
+// library's, and the winner's banner is what the SSH client sees. --verbose names
+// the port that won; without it a working session says nothing.
+func TestRunSSHMode(t *testing.T) {
+	tlsPort := testserver.SSHEcho(t, "SSH-2.0-tls-server", "KEXINIT-S", "ssh", true)
+	sshPort := testserver.SSHEcho(t, "SSH-2.0-plain-server", "KEXINIT-S", "", false)
+
+	for _, verbose := range []bool{false, true} {
+		local := testserver.FreePort(t)
+		tun := &sclient.Tunnel{
+			RemoteAddress:      "localhost",
+			RemotePort:         tlsPort,
+			SSHPort:            sshPort,
+			LocalAddress:       "127.0.0.1",
+			LocalPort:          local.Port,
+			NextProtos:         []string{"ssh"},
+			InsecureSkipVerify: true,
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		var out bytes.Buffer
+		cfg := MainConfig{stderr: &out, verbose: verbose}
+		done := make(chan error, 1)
+		go func() { done <- cfg.run(ctx, tun) }()
+
+		conn, err := testserver.Dial(t, tun.Local())
+		if err != nil {
+			t.Fatalf("verbose=%v: connect to the local listener: %v", verbose, err)
+		}
+		defer conn.Close()
+
+		if _, err := fmt.Fprintf(conn, "SSH-2.0-client\r\nBYE\r\n"); err != nil {
+			t.Fatalf("verbose=%v: write: %v", verbose, err)
+		}
+
+		_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		got, err := io.ReadAll(conn)
+		if err != nil {
+			t.Fatalf("verbose=%v: read: %v", verbose, err)
+		}
+		if string(got) != "SSH-2.0-tls-server\r\nKEXINIT-S\r\nGOODBYE\r\n" {
+			t.Errorf("verbose=%v: the ssh client saw %q, want the banner, the bytes glued to it, then GOODBYE", verbose, string(got))
+		}
+
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("verbose=%v: run: %v", verbose, err)
+		}
+
+		lines := out.String()
+		if verbose && !strings.Contains(lines, "[connect] localhost:") {
+			t.Errorf("verbose=%v: no [connect] line naming the port that won: %q", verbose, lines)
+		}
+		if !verbose && strings.Contains(lines, "[connect]") {
+			t.Errorf("verbose=%v: a working session printed progress: %q", verbose, lines)
+		}
+	}
+}
+
+// --ssh is shorthand; --ssh-port is the mode; naming zero is a mistake, not "off".
+func TestSSHMode(t *testing.T) {
+	cases := []struct {
+		ssh     bool
+		sshPort int
+		named   bool
+		want    int
+		err     bool
+	}{
+		{false, 0, false, 0, false}, // plain TLS tunnel
+		{true, 0, false, 22, false}, // --ssh
+		{false, 2222, true, 2222, false},
+		{true, 2222, true, 2222, false}, // an explicit port beats the shorthand
+		{false, 0, true, 0, true},       // --ssh-port 0 named on purpose
+		{false, -1, true, 0, true},
+	}
+	for _, c := range cases {
+		got, err := sshMode(c.ssh, c.sshPort, c.named)
+		if c.err {
+			if err == nil {
+				t.Errorf("sshMode(ssh=%v, port=%d, named=%v): want an error, got %d", c.ssh, c.sshPort, c.named, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("sshMode(ssh=%v, port=%d, named=%v): %v", c.ssh, c.sshPort, c.named, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("sshMode(ssh=%v, port=%d, named=%v) = %d, want %d", c.ssh, c.sshPort, c.named, got, c.want)
+		}
+	}
+}
+
+// In SSH mode an unset --alpn offers "ssh"; an explicit empty one turns the gate
+// off; in plain mode an unset list leaves the tunnel free to sniff the local side.
+func TestAlpnList(t *testing.T) {
+	cases := []struct {
+		raw      string
+		explicit bool
+		ssh      bool
+		want     []string
+	}{
+		{"", false, true, []string{"ssh"}},
+		{"", true, true, []string{}},
+		{"", false, false, nil},
+		{"h2,http/1.1", false, true, []string{"h2", "http/1.1"}},
+		{"", true, false, []string{}},
+	}
+	for _, c := range cases {
+		got := alpnList(c.raw, c.explicit, c.ssh)
+		if !slices.Equal(got, c.want) {
+			t.Errorf("alpnList(%q, explicit=%v, ssh=%v) = %q, want %q", c.raw, c.explicit, c.ssh, got, c.want)
 		}
 	}
 }
