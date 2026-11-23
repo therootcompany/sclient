@@ -70,6 +70,8 @@ sclient [flags] <remote> <local>
 ```
 
 - flags
+  - `version`, `-V`, `--version` print the version, the commit, and the build date
+  - `help`, `--help` print the usage and exit
   - `-s`, `--silent` less verbose logging
   - `-k`, `--insecure` ignore invalid TLS (SSL/HTTPS) certificates
   - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
