@@ -40,6 +40,7 @@ A poor man's (or Windows user's) makeshift replacement for `openssl s_client`,
 - [Usage](#usage)
 - [Examples](#examples)
 - [SSH mode](#ssh-mode)
+- [ssh-tls-proxy](#ssh-tls-proxy)
 - [API](#api)
 - [Build from Source](#build-from-source)
 - [Tests](#tests)
@@ -197,6 +198,18 @@ nothing is accepted - the rule is opt-in per server.
 With no SSH mode, the local side is sniffed: an `SSH-` banner in the first bytes
 means the client is ssh, so `ssh` is offered as the ALPN. Stdio has no read
 deadline, so it is not sniffed - name the protocol with `--ssh-port` or `--alpn`.
+
+# ssh-tls-proxy
+
+`ssh-tls-proxy` is the SSH probe with SSH-only defaults: the SSH client is stdin
+and stdout, and `--listen` binds a local port instead. It has its own flags and
+usage; the probe itself is the library's.
+
+```bash
+go get github.com/therootcompany/sclient/cmd/ssh-tls-proxy
+ssh -o ProxyCommand='ssh-tls-proxy --ssh-port %p %h:443' example.com
+ssh-tls-proxy --listen localhost:2222 example.com:443
+```
 
 # API
 
