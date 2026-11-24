@@ -274,3 +274,27 @@ func port(addr net.Addr) int {
 	}
 	return p
 }
+
+// CloseImmediately accepts the connection and hangs up before the handshake, so
+// the client's TLS handshake fails.
+func CloseImmediately(t *testing.T) int {
+	t.Helper()
+
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("close-immediately server: listen: %v", err)
+	}
+
+	go func() {
+		for {
+			conn, err := inner.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	t.Cleanup(func() { _ = inner.Close() })
+	return port(inner.Addr())
+}

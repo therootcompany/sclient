@@ -20,8 +20,8 @@ import (
 // host its banner declares (RFC 4253 section 4.2). A banner that declares nothing
 // is accepted; the rule is opt-in per server.
 
-// ErrNoServer means neither port was usable. Every candidate's failure is already
-// written to the diagnostics destination.
+// ErrNoServer marks an SSH-mode session where neither port was usable. The
+// wrapped error carries the report; the command only has to print it.
 var ErrNoServer = errors.New("no usable server")
 
 const (
@@ -62,9 +62,11 @@ type sshCandidate struct {
 func (c *sshCandidate) usable() bool { return c.err == nil && c.mismatch == "" }
 
 // ServeSSH runs one SSH-mode session over an already-connected local side: stdio,
-// or a connection the caller accepted. stderr gets the failure report, always.
+// or a connection the caller accepted. stderr gets the verbose candidate lines;
 // progress names the port that won; verbose names every candidate and why it lost.
-// Both are the command's decision, not the tunnel's.
+// All three are the command's decision, not the tunnel's. When neither port is
+// usable the failure comes back as an error wrapping ErrNoServer, for the
+// command to write.
 func (t *Tunnel) ServeSSH(ctx context.Context, local net.Conn, stderr io.Writer, progress, verbose bool) error {
 	// Reading one client line is safe: the server waits for the client's banner
 	// before sending anything else (RFC 4253 section 4.2).
@@ -74,7 +76,7 @@ func (t *Tunnel) ServeSSH(ctx context.Context, local net.Conn, stderr io.Writer,
 	// the local side on ctx.Done is what makes the banner read return.
 	stop := context.AfterFunc(ctx, func() { _ = local.Close() })
 	defer stop()
-	if _, isStdio := local.(*stdnet); !isStdio {
+	if !isPipe(local) {
 		_ = local.SetReadDeadline(time.Now().Add(t.connectTimeout()))
 	}
 
@@ -87,7 +89,7 @@ func (t *Tunnel) ServeSSH(ctx context.Context, local net.Conn, stderr io.Writer,
 	}
 	_ = local.SetReadDeadline(time.Time{})
 
-	chosen, err := t.probeSSH(ctx, clientBanner, stderr, verbose)
+	chosen, err := t.probeSSH(ctx, clientBanner, stderr, verbose, isPipe(local))
 	if err != nil {
 		_ = local.Close()
 		return err
@@ -121,7 +123,7 @@ func (t *Tunnel) ServeSSH(ctx context.Context, local net.Conn, stderr io.Writer,
 // probeSSH dials the SSH port and the TLS port at once, exchanges banners with
 // whichever answers, and returns the winner: the TLS connection if it speaks the
 // ALPN we asked for, otherwise the plain SSH port.
-func (t *Tunnel) probeSSH(ctx context.Context, clientBanner string, stderr io.Writer, verbose bool) (*sshCandidate, error) {
+func (t *Tunnel) probeSSH(ctx context.Context, clientBanner string, stderr io.Writer, verbose, sshClient bool) (*sshCandidate, error) {
 	debugf := func(format string, args ...any) {
 		if verbose {
 			_, _ = fmt.Fprintf(stderr, format+"\n", args...)
@@ -135,8 +137,7 @@ func (t *Tunnel) probeSSH(ctx context.Context, clientBanner string, stderr io.Wr
 	// One lookup: both ports are the same name, so a name that does not resolve
 	// is one failure, not two.
 	if _, err := net.LookupHost(t.RemoteAddress); err != nil {
-		reportClosed(stderr, t, err)
-		return nil, ErrNoServer
+		return nil, noServerClosed(t, err, sshClient)
 	}
 
 	// The probe bound is the connect timeout plus the longest handshake, or the
@@ -228,8 +229,7 @@ func (t *Tunnel) probeSSH(ctx context.Context, clientBanner string, stderr io.Wr
 		chosen = pickCandidate(ready)
 	}
 	if chosen == nil {
-		reportNoServer(stderr, t, ready, failed)
-		return nil, ErrNoServer
+		return nil, noServer(t, ready, failed, sshClient)
 	}
 
 	debugf("chosen: %s %s", chosen.kind, chosen.address)
@@ -253,9 +253,11 @@ func (t *Tunnel) candidatePlain(ctx context.Context, address string, port int, c
 	start := time.Now()
 	c := &sshCandidate{kind: "ssh", address: address, port: port}
 
-	conn, err := t.connect(ctx, address)
+	connectCtx, cancelConnect := context.WithTimeout(ctx, t.connectTimeout())
+	defer cancelConnect()
+	conn, err := t.connect(connectCtx, address)
 	if err != nil {
-		c.err = dialError(err, time.Since(start), ctx)
+		c.err = dialError(err, time.Since(start), connectCtx)
 		return c
 	}
 	if onConnected != nil {
@@ -274,9 +276,11 @@ func (t *Tunnel) candidateTLS(ctx context.Context, probeCtx context.Context, add
 	start := time.Now()
 	c := &sshCandidate{kind: "tls", address: address, port: port}
 
-	conn, err := t.connect(probeCtx, address)
+	connectCtx, cancelConnect := context.WithTimeout(probeCtx, t.connectTimeout())
+	defer cancelConnect()
+	conn, err := t.connect(connectCtx, address)
 	if err != nil {
-		c.err = dialError(err, time.Since(start), probeCtx)
+		c.err = dialError(err, time.Since(start), connectCtx)
 		return c
 	}
 	if onConnected != nil {
@@ -297,7 +301,7 @@ func (t *Tunnel) candidateTLS(ctx context.Context, probeCtx context.Context, add
 
 	remote, err := t.handshake(handshake, conn, t.NextProtos)
 	if err != nil {
-		c.err = dialError(fmt.Errorf("tls: %w", err), time.Since(start), probeCtx)
+		c.err = dialError(err, time.Since(start), handshake)
 		return c
 	}
 
@@ -390,35 +394,41 @@ func pickCandidate(ready []*sshCandidate) *sshCandidate {
 	return nil
 }
 
-// reportNoServer names every candidate and why it lost, then closes the session in
-// ssh's own words so "Connection closed by UNKNOWN port 65535" has a cause.
-// --silent quiets progress lines, not this report.
-func reportNoServer(stderr io.Writer, t *Tunnel, ready, failed []*sshCandidate) {
-	var report strings.Builder
-	fmt.Fprintf(&report, "sclient: %s: no usable server\n", t.RemoteAddress)
+// noServer is the failure of a session where every candidate lost. The header
+// names the remote; each candidate that lost is indented under it. ssh's closing
+// line is added only for a session piped to ssh - a forwarded port has no ssh
+// listening for "Connection closed by UNKNOWN port 65535".
+func noServer(t *Tunnel, ready, failed []*sshCandidate, sshClient bool) error {
+	lines := make([]string, 0, len(ready)+len(failed))
 	for _, c := range ready {
-		fmt.Fprintf(&report, "  %s %d: %s\n", c.kind, c.port, c.mismatch)
+		lines = append(lines, fmt.Sprintf("  %s %d: %s", c.kind, c.port, c.mismatch))
 	}
 	for _, c := range failed {
-		fmt.Fprintf(&report, "  %s %d: %v\n", c.kind, c.port, c.err)
+		lines = append(lines, fmt.Sprintf("  %s %d: %v", c.kind, c.port, c.err))
 	}
-	fmt.Fprintf(&report, "%s\n", closeLine("sclient", t.RemoteAddress, attemptedPorts(t)))
-	fmt.Fprint(stderr, report.String())
+
+	report := fmt.Errorf("%s: %w\n%s", t.RemoteAddress, ErrNoServer, strings.Join(lines, "\n"))
+	if !sshClient {
+		return report
+	}
+	return fmt.Errorf("%w\n%s", report, closedLine(t.RemoteAddress, attemptedPorts(t)))
 }
 
-// reportClosed is the report for a failure before any dial: the name did not
-// resolve, so there is no port that was tried.
-func reportClosed(stderr io.Writer, t *Tunnel, err error) {
+// noServerClosed is the failure before any dial: the name never resolved, so no
+// port was tried.
+func noServerClosed(t *Tunnel, err error, sshClient bool) error {
 	reason := lookupReason(err)
-	_, _ = fmt.Fprintf(stderr, "sclient: %s: no usable server: %s\n", t.RemoteAddress, strings.ToLower(reason))
-	_, _ = fmt.Fprintln(stderr, closeLine("sclient", reason, nil))
+	report := fmt.Errorf("%s: %w: %s", t.RemoteAddress, ErrNoServer, strings.ToLower(reason))
+	if !sshClient {
+		return report
+	}
+	return fmt.Errorf("%w\n%s", report, closedLine(reason, nil))
 }
 
-// closeLine is the last line of a failed session, in ssh's own phrasing:
-// sclient: Connection closed by "example.com" ports [22, 443].
-// ssh prints "Connection closed by UNKNOWN port 65535" when a ProxyCommand dies,
-// so the failure names the reason and every port that was tried in the same shape.
-func closeLine(name, reason string, ports []int) string {
+// closedLine is the line ssh would have printed for a ProxyCommand that died:
+// Connection closed by "example.com" ports [22, 443]. It stands on its own, the
+// way ssh prints it, so it carries no name and no indent.
+func closedLine(reason string, ports []int) string {
 	if len(ports) == 0 {
 		ports = []int{0}
 	}
@@ -432,11 +442,9 @@ func closeLine(name, reason string, ports []int) string {
 	if len(parts) > 1 {
 		word = "ports"
 	}
-	return fmt.Sprintf("%s: Connection closed by %q %s [%s]", name, reason, word, strings.Join(parts, ", "))
+	return fmt.Sprintf("Connection closed by %q %s [%s]", reason, word, strings.Join(parts, ", "))
 }
 
-// attemptedPorts is every port this session was asked to dial: the plain SSH port
-// and the TLS port on the address.
 func attemptedPorts(t *Tunnel) []int {
 	ports := []int{t.SSHPort}
 	if t.hasTLSRoute() {
@@ -457,14 +465,14 @@ func lookupReason(err error) string {
 	return strings.ToUpper(text[index+2:])
 }
 
-// dialError names the reason a dial never connected: a deadline gives a timeout,
-// the caller pulling the plug gives a cancellation.
+// dialError: a dial cut by the probe deadline reads as a timeout, not a
+// cancellation.
 func dialError(err error, elapsed time.Duration, probeCtx context.Context) error {
 	timeout := fmt.Errorf("timed out after %s", elapsedText(elapsed))
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
+	switch probeCtx.Err() {
+	case context.DeadlineExceeded:
 		return timeout
-	case errors.Is(err, context.Canceled):
+	case context.Canceled:
 		if errors.Is(context.Cause(probeCtx), errProbeDeadline) {
 			return timeout
 		}
@@ -489,7 +497,7 @@ func sniffALPN(ctx context.Context, nextProtos []string, client *bufio.Reader, c
 	if nextProtos != nil || ctx.Err() != nil {
 		return nextProtos
 	}
-	if _, isStdio := conn.(*stdnet); isStdio {
+	if isPipe(conn) {
 		return nextProtos
 	}
 
@@ -586,7 +594,8 @@ func hostValue(field string) string {
 // bannerMismatch explains why a banner names a server other than the one we
 // dialled; "" means it matches or makes no claim at all. Only a declared host list
 // can refuse a candidate. An IP address is not contradicted by a name list: the
-// server may name any of its own names and still be the machine we dialled.
+// server may name any of its own names and still be the machine we dialled. The
+// banner is quoted in the line, so the reason names only the host it excludes.
 func bannerMismatch(want, banner string) string {
 	declared := declaredHosts(banner)
 	if want == "" || len(declared) == 0 || net.ParseIP(want) != nil {
@@ -597,5 +606,5 @@ func bannerMismatch(want, banner string) string {
 			return ""
 		}
 	}
-	return fmt.Sprintf("banner %q declares %s, not %q", banner, strings.Join(declared, ", "), want)
+	return fmt.Sprintf("banner %q excludes %q", banner, want)
 }

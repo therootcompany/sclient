@@ -254,6 +254,22 @@ func TestRunBindFailure(t *testing.T) {
 }
 
 func TestRunStdio(t *testing.T) {
+	// The default prints nothing: silent progress is the stdio default.
+	diag := runStdioSession(t, false)
+	if diag != "" {
+		t.Errorf("run stdio: default progress is %q, want nothing", diag)
+	}
+
+	// --verbose prints the one progress line.
+	diag = runStdioSession(t, true)
+	if !strings.Contains(diag, "(connected to") {
+		t.Errorf("run stdio: the progress line is missing: got %q", diag)
+	}
+}
+
+func runStdioSession(t *testing.T, verbose bool) string {
+	t.Helper()
+
 	host, port, shutdown, conns := testserver.TLS(t)
 	defer shutdown()
 
@@ -281,7 +297,7 @@ func TestRunStdio(t *testing.T) {
 	}
 
 	var diag bytes.Buffer
-	cfg := MainConfig{stderr: &diag}
+	cfg := MainConfig{stderr: &diag, verbose: verbose}
 	if err := cfg.run(context.Background(), tun); err != nil {
 		t.Fatalf("run stdio: %v", err)
 	}
@@ -294,13 +310,11 @@ func TestRunStdio(t *testing.T) {
 	if string(payload) != testserver.Reply {
 		t.Errorf("run stdio: payload is %q, want %q", string(payload), testserver.Reply)
 	}
-	if !strings.Contains(diag.String(), "(connected to") {
-		t.Errorf("run stdio: the progress line is missing: got %q", diag.String())
-	}
 	// One session, one dial: stdio never probes.
 	if count := conns.Load(); count != 1 {
 		t.Errorf("run stdio: the remote saw %d connections, want 1", count)
 	}
+	return diag.String()
 }
 
 func TestDisplayAddr(t *testing.T) {
@@ -354,13 +368,13 @@ func TestLocalAddr(t *testing.T) {
 }
 
 // SSH mode through run(): the listener is the command's, the session is the
-// library's, and the winner's banner is what the SSH client sees. --verbose names
-// the port that won; without it a working session says nothing.
+// library's, and the winner's banner is what the SSH client sees. A forwarded
+// session names the port that won, unless --silent is set.
 func TestRunSSHMode(t *testing.T) {
 	tlsPort := testserver.SSHEcho(t, "SSH-2.0-tls-server", "KEXINIT-S", "ssh", true)
 	sshPort := testserver.SSHEcho(t, "SSH-2.0-plain-server", "KEXINIT-S", "", false)
 
-	for _, verbose := range []bool{false, true} {
+	for _, silent := range []bool{false, true} {
 		local := testserver.FreePort(t)
 		tun := &sclient.Tunnel{
 			RemoteAddress:      "localhost",
@@ -376,41 +390,93 @@ func TestRunSSHMode(t *testing.T) {
 		defer cancel()
 
 		var out bytes.Buffer
-		cfg := MainConfig{stderr: &out, verbose: verbose}
+		cfg := MainConfig{stderr: &out, silent: silent}
 		done := make(chan error, 1)
 		go func() { done <- cfg.run(ctx, tun) }()
 
 		conn, err := testserver.Dial(t, tun.Local())
 		if err != nil {
-			t.Fatalf("verbose=%v: connect to the local listener: %v", verbose, err)
+			t.Fatalf("silent=%v: connect to the local listener: %v", silent, err)
 		}
 		defer conn.Close()
 
 		if _, err := fmt.Fprintf(conn, "SSH-2.0-client\r\nBYE\r\n"); err != nil {
-			t.Fatalf("verbose=%v: write: %v", verbose, err)
+			t.Fatalf("silent=%v: write: %v", silent, err)
 		}
 
 		_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 		got, err := io.ReadAll(conn)
 		if err != nil {
-			t.Fatalf("verbose=%v: read: %v", verbose, err)
+			t.Fatalf("silent=%v: read: %v", silent, err)
 		}
 		if string(got) != "SSH-2.0-tls-server\r\nKEXINIT-S\r\nGOODBYE\r\n" {
-			t.Errorf("verbose=%v: the ssh client saw %q, want the banner, the bytes glued to it, then GOODBYE", verbose, string(got))
+			t.Errorf("silent=%v: the ssh client saw %q, want the banner, the bytes glued to it, then GOODBYE", silent, string(got))
 		}
 
 		cancel()
 		if err := <-done; err != nil {
-			t.Errorf("verbose=%v: run: %v", verbose, err)
+			t.Errorf("silent=%v: run: %v", silent, err)
 		}
 
 		lines := out.String()
-		if verbose && !strings.Contains(lines, "[connect] localhost:") {
-			t.Errorf("verbose=%v: no [connect] line naming the port that won: %q", verbose, lines)
+		if !silent && !strings.Contains(lines, "[connect] localhost:") {
+			t.Errorf("silent=%v: no [connect] line naming the port that won: %q", silent, lines)
 		}
-		if !verbose && strings.Contains(lines, "[connect]") {
-			t.Errorf("verbose=%v: a working session printed progress: %q", verbose, lines)
+		if silent && strings.Contains(lines, "[connect]") {
+			t.Errorf("silent=%v: progress printed anyway: %q", silent, lines)
 		}
+	}
+}
+
+// A session with no usable server prints the report, and the report is spoken by
+// the command: main.go names itself, not the library.
+func TestRunSSHModeNoServer(t *testing.T) {
+	tlsPort := testserver.SSHEcho(t, "SSH-2.0-OpenSSH_9.6 host:other.example.net", "", "ssh", true)
+	sshPort := testserver.SSHEcho(t, "SSH-2.0-OpenSSH_9.6 host:other.example.net", "", "", false)
+
+	local := testserver.FreePort(t)
+	tun := &sclient.Tunnel{
+		RemoteAddress:      "localhost",
+		RemotePort:         tlsPort,
+		SSHPort:            sshPort,
+		LocalAddress:       "127.0.0.1",
+		LocalPort:          local.Port,
+		NextProtos:         []string{"ssh"},
+		InsecureSkipVerify: true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	cfg := MainConfig{stderr: &out}
+	done := make(chan error, 1)
+	go func() { done <- cfg.run(ctx, tun) }()
+
+	conn, err := testserver.Dial(t, tun.Local())
+	if err != nil {
+		t.Fatalf("connect to the local listener: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := fmt.Fprintf(conn, "SSH-2.0-client\r\nBYE\r\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	_, _ = io.ReadAll(conn)
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Errorf("run: %v", err)
+	}
+
+	report := out.String()
+	if !strings.Contains(report, "sclient: localhost: no usable server\n") {
+		t.Errorf("report = %q, want the header spoken by the command", report)
+	}
+	if strings.Contains(report, "Connection closed by") {
+		t.Errorf("report = %q, want no ssh close line for a forwarded port", report)
 	}
 }
 

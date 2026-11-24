@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -65,6 +66,30 @@ const (
 	handshakeMultiplier  = 3
 )
 
+// ErrConnectTimeout means the remote never answered: the connect ran past its
+// deadline. Wrap it with the remote to say whose dial failed.
+var ErrConnectTimeout = errors.New("connect timed out")
+
+// ErrHandshakeTimeout means the TLS handshake ran past its deadline: the remote
+// answered and stalled.
+var ErrHandshakeTimeout = errors.New("handshake timed out")
+
+// ErrHandshakeFailed means the TLS handshake never completed: the remote
+// answered and closed the connection, or answered something that is not a TLS
+// handshake. Wrap it with the remote to say whose dial failed.
+var ErrHandshakeFailed = errors.New("handshake failed")
+
+// handshakeFailure names the cause of a handshake that never completed, so the
+// caller sees the phase and the reason instead of Go's jargon.
+func handshakeFailure(err error) error {
+	if errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) {
+		return fmt.Errorf("%w: server closed the connection", ErrHandshakeFailed)
+	}
+	return fmt.Errorf("%w: %s", ErrHandshakeFailed, err)
+}
+
 func (t *Tunnel) handshakeDeadline(connect time.Duration) time.Duration {
 	if t.TLSTimeout > 0 {
 		return t.TLSTimeout
@@ -80,34 +105,46 @@ func (t *Tunnel) connectTimeout() time.Duration {
 }
 
 func (t *Tunnel) connect(ctx context.Context, address string) (net.Conn, error) {
-	return (&net.Dialer{Timeout: t.connectTimeout()}).DialContext(ctx, "tcp", address)
+	return (&net.Dialer{}).DialContext(ctx, "tcp", address)
 }
 
 func (t *Tunnel) handshake(ctx context.Context, conn net.Conn, protos []string) (*tls.Conn, error) {
 	remote := tls.Client(conn, t.tlsConfig(protos))
 	if err := remote.HandshakeContext(ctx); err != nil {
 		_ = conn.Close()
-		return nil, err
+		return nil, handshakeFailure(err)
 	}
 	return remote, nil
 }
 
-// dial connects, then handshakes, each under its own deadline.
+// dial connects, then handshakes, each under its own deadline. The deadline is
+// carried by the child context, so the sentinel comes from the context, not the
+// error - the net package reports a timeout in a couple of different shapes.
 func (t *Tunnel) dial(ctx context.Context, protos []string) (*tls.Conn, error) {
 	connect := t.connectTimeout()
-	ctx, cancel := context.WithTimeout(ctx, connect+t.handshakeDeadline(connect))
-	defer cancel()
+	connectCtx, cancelConnect := context.WithTimeout(ctx, connect)
+	defer cancelConnect()
 
 	start := time.Now()
-	conn, err := t.connect(ctx, t.Remote())
+	conn, err := t.connect(connectCtx, t.Remote())
 	if err != nil {
+		if connectCtx.Err() == context.DeadlineExceeded {
+			return nil, ErrConnectTimeout
+		}
 		return nil, err
 	}
 
-	handshake, cancelHandshake := context.WithTimeout(ctx, t.handshakeDeadline(time.Since(start)))
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, t.handshakeDeadline(time.Since(start)))
 	defer cancelHandshake()
 
-	return t.handshake(handshake, conn, protos)
+	remote, err := t.handshake(handshakeCtx, conn, protos)
+	if err != nil {
+		if handshakeCtx.Err() == context.DeadlineExceeded {
+			return nil, ErrHandshakeTimeout
+		}
+		return nil, err
+	}
+	return remote, nil
 }
 
 // Deprecated: DialAndListen is the v1.5.1 entry point - the lifecycle in one
@@ -190,7 +227,7 @@ func (t *Tunnel) Serve(ctx context.Context, local net.Conn) error {
 	remote, err := t.dial(ctx, protos)
 	if err != nil {
 		_ = local.Close()
-		return fmt.Errorf("remote %s: %w", t.Remote(), err)
+		return fmt.Errorf("%s: %w", t.Remote(), err)
 	}
 
 	if err := drainTo(remote, client); err != nil {
@@ -243,6 +280,13 @@ func (rw *stdnet) LocalAddr() net.Addr {
 func (rw *stdnet) SetDeadline(time.Time) error      { return nil }
 func (rw *stdnet) SetReadDeadline(time.Time) error  { return nil }
 func (rw *stdnet) SetWriteDeadline(time.Time) error { return nil }
+
+// isPipe reports whether the local side is stdin and stdout - ssh's ProxyCommand -
+// rather than a connection the listener accepted.
+func isPipe(conn net.Conn) bool {
+	_, ok := conn.(*stdnet)
+	return ok
+}
 
 // displayAddr prints loopback as localhost.
 func displayAddr(addr net.Addr) string {

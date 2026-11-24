@@ -77,7 +77,7 @@ sclient [flags] <remote> <local>
   - `help`, `--help` print the usage and exit
   - `-s`, `--silent` less verbose logging
   - `-v`, `--verbose` name every probe candidate, its banner, and why it lost
-    (SSH mode); without it SSH mode prints only the failure report
+    (SSH mode); also turns on progress lines for a session on a pipe
   - `-k`, `--insecure` ignore invalid TLS (SSL/HTTPS) certificates
   - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
     not use this option)
@@ -167,8 +167,27 @@ ssh -o ProxyCommand='sclient --ssh-port %p %h:443' example.com
 - TLS that handshakes but will not negotiate that ALPN has no ssh route for this
   name - it is closed at the handshake and never sees the banner.
 - Otherwise, if the plain port answers with an SSH banner, it is plain ssh.
-- Neither answers: every candidate is named with why it lost, then
-  `sclient: Connection closed by "example.com" ports [22, 443]`.
+- Neither answers: one report, spoken by the command, with every candidate that
+  lost indented under it:
+
+  ```
+  sclient: example.com: no usable server
+    tls 443: banner "SSH-2.0-OpenSSH_9.6 host:other.example.net" excludes "example.com"
+    ssh 22: timed out after 1.2s
+  ```
+
+  A session piped to ssh (`ProxyCommand`) also gets ssh's own closing line, so the
+  "Connection closed by UNKNOWN port 65535" ssh prints has a cause:
+
+  ```
+  Connection closed by "example.com" ports [22, 443]
+  ```
+
+Progress goes where a human is watching: a forwarded port (`localhost:3000`)
+prints `[listening]` and a `[connect]` line naming the port that won. A session on
+a pipe - ssh's `ProxyCommand` - has its stderr on the user's terminal, so it says
+nothing while it works; the failure report is still printed, and `--verbose` turns
+the progress lines on.
 
 A server can name itself in the banner comment (RFC 4253 section 4.2), ex
 `SSH-2.0-OpenSSH_9.6 host:example.com`. When a banner declares hosts and none of

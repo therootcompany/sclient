@@ -50,10 +50,14 @@ and the TLS port at the same time, the ALPN check and the RFC 4253 banner decide
 which of them is the SSH server for that name, and the local side is relayed onto
 the winner.
 
-	err := tun.ServeSSH(ctx, conn, os.Stderr)
+	err := tun.ServeSSH(ctx, conn, os.Stderr, true, true)
 
-`ErrNoServer` means neither port was usable; the report of why each candidate
-lost has already been written to the `io.Writer` the caller handed in.
+`progress` says whether the session may name the port that won; `verbose` says
+whether it may name every candidate and why it lost. Both are the caller's
+decision. `ErrNoServer` marks a failed probe: the error names the remote and
+indents every candidate that lost, so the caller prints it with its own name in
+front. When the local side is stdio - ssh's `ProxyCommand` - the error also ends
+with ssh's own closing line and the ports tried.
 
 # Deprecated
 

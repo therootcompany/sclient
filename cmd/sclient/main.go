@@ -270,10 +270,9 @@ func main() {
 	defer stop()
 
 	if err := cfg.run(ctx, tun); err != nil {
-		// SSH mode already named every candidate that lost.
-		if !errors.Is(err, sclient.ErrNoServer) {
-			_, _ = fmt.Fprintf(cfg.stderr, "%s\n", err)
-		}
+		// The command is the speaker; everything nested in the error is already
+		// indented under this line.
+		_, _ = fmt.Fprintf(cfg.stderr, "%s: %s\n", name, err)
 		os.Exit(1)
 	}
 }
@@ -333,16 +332,13 @@ func (c MainConfig) run(ctx context.Context, tun *sclient.Tunnel) error {
 	if tun.LocalAddress == "-" || tun.LocalAddress == "|" {
 		local := sclient.StdioConn(tun.LocalAddress)
 		if tun.SSHPort > 0 {
-			return tun.ServeSSH(ctx, local, c.stderr, c.verbose && !c.silent, c.verbose)
+			return tun.ServeSSH(ctx, local, c.stderr, sshProgress(c, tun), c.verbose)
 		}
-		if !c.silent {
+		if c.verbose && !c.silent {
 			_, _ = fmt.Fprintf(c.stderr, "(connected to %s and reading from %s)\n",
 				tun.Remote(), local.RemoteAddr())
 		}
-		if err := tun.Serve(ctx, local); err != nil {
-			return fmt.Errorf("session: %w", err)
-		}
-		return nil
+		return tun.Serve(ctx, local)
 	}
 
 	// The probe is the operator's early warning; each local connection dials on
@@ -385,9 +381,11 @@ func (c MainConfig) run(ctx context.Context, tun *sclient.Tunnel) error {
 // serve runs one session. A failed session is reported; the listener keeps going.
 func (c MainConfig) serve(ctx context.Context, tun *sclient.Tunnel, local net.Conn) {
 	if tun.SSHPort > 0 {
-		// ServeSSH names the port that won and reports every candidate that lost;
-		// a second "no usable server" line says nothing new.
-		if err := tun.ServeSSH(ctx, local, c.stderr, c.verbose && !c.silent, c.verbose); err != nil && !errors.Is(err, sclient.ErrNoServer) {
+		if err := tun.ServeSSH(ctx, local, c.stderr, sshProgress(c, tun), c.verbose); err != nil {
+			if errors.Is(err, sclient.ErrNoServer) {
+				_, _ = fmt.Fprintf(c.stderr, "%s: %s\n", name, err)
+				return
+			}
 			_, _ = fmt.Fprintf(c.stderr, "[error] %s: %s\n", displayAddr(local.RemoteAddr()), err)
 		}
 		return

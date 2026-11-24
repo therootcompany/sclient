@@ -2,6 +2,7 @@ package sclient
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -57,7 +58,7 @@ func TestProbePrefersTLS(t *testing.T) {
 	tlsPort := testserver.SSHEcho(t, "SSH-2.0-tls-server", "", "ssh", true)
 	sshPort := testserver.SSHEcho(t, "SSH-2.0-plain-server", "", "", false)
 
-	chosen, err := loopbackTunnel(tlsPort, sshPort).probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false)
+	chosen, err := loopbackTunnel(tlsPort, sshPort).probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, false)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -76,7 +77,7 @@ func TestProbeSlowTLSStillWins(t *testing.T) {
 	tlsPort := testserver.SlowSSHEcho(t, "SSH-2.0-slow-tls-server", "ssh", 60*time.Millisecond)
 	sshPort := testserver.SSHEcho(t, "SSH-2.0-plain-server", "", "", false)
 
-	chosen, err := loopbackTunnel(tlsPort, sshPort).probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false)
+	chosen, err := loopbackTunnel(tlsPort, sshPort).probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, false)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestProbeSlowTLSStillWins(t *testing.T) {
 func TestProbeFallsBackToPlainSSH(t *testing.T) {
 	sshPort := testserver.SSHEcho(t, "SSH-2.0-plain-server", "", "", false)
 
-	chosen, err := loopbackTunnel(1, sshPort).probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false)
+	chosen, err := loopbackTunnel(1, sshPort).probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, false)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestProbeALPNCheck(t *testing.T) {
 	tun.NextProtos = []string{"ssh"}
 
 	report := newReport()
-	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", report, true)
+	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", report, true, false)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestProbeALPNMismatchAbortsTheHandshake(t *testing.T) {
 	tun := loopbackTunnel(tlsPort, sshPort)
 	tun.NextProtos = []string{"ssh"}
 
-	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false)
+	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, false)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestProbeALPNCheckOff(t *testing.T) {
 	tun := loopbackTunnel(tlsPort, 1)
 	tun.NextProtos = []string{}
 
-	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false)
+	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, false)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -165,29 +166,30 @@ func TestProbeNoSuchHost(t *testing.T) {
 	tun := loopbackTunnel(1, 1)
 	tun.RemoteAddress = "does-not-exist.invalid" // RFC 2606: never resolves
 
-	report := newReport()
 	start := time.Now()
-	_, err := tun.probeSSH(context.Background(), "SSH-2.0-client", report, false)
+	_, err := tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, true)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, ErrNoServer) {
 		t.Fatalf("probe: got %v, want ErrNoServer", err)
 	}
-	if count := strings.Count(report.String(), "no such host"); count != 1 {
-		t.Errorf("report = %q, want the lookup named once", report.String())
+
+	report := err.Error()
+	if count := strings.Count(report, "no such host"); count != 1 {
+		t.Errorf("report = %q, want the lookup named once", report)
 	}
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("probe dialled anyway: %s", elapsedText(elapsed))
 	}
 
-	lines := strings.Split(strings.TrimRight(report.String(), "\n"), "\n")
+	lines := strings.Split(strings.TrimRight(report, "\n"), "\n")
 	if len(lines) != 2 {
-		t.Fatalf("report = %q, want the cause and the close line", report.String())
+		t.Fatalf("report = %q, want the cause and the close line", report)
 	}
-	if lines[0] != "sclient: does-not-exist.invalid: no usable server: no such host" {
-		t.Errorf("cause line = %q, want the command, the name and the cause", lines[0])
+	if lines[0] != "does-not-exist.invalid: no usable server: no such host" {
+		t.Errorf("cause line = %q, want the name and the cause", lines[0])
 	}
-	want := `sclient: Connection closed by "NO SUCH HOST" port [0]`
+	want := `Connection closed by "NO SUCH HOST" port [0]`
 	if lines[1] != want {
 		t.Errorf("close line = %q, want %q", lines[1], want)
 	}
@@ -203,7 +205,7 @@ func TestProbeSkipsTLSForUnnamedIP(t *testing.T) {
 	tun.RemoteAddress = "127.0.0.1"
 
 	report := newReport()
-	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", report, true)
+	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", report, true, false)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -225,44 +227,51 @@ func TestProbeBannerMismatch(t *testing.T) {
 	tun.ServerName = "example.com"
 
 	report := newReport()
-	_, err := tun.probeSSH(context.Background(), "SSH-2.0-client", report, true)
+	_, err := tun.probeSSH(context.Background(), "SSH-2.0-client", report, true, false)
 	if !errors.Is(err, ErrNoServer) {
 		t.Fatalf("probe: got %v, want ErrNoServer", err)
 	}
-	if !strings.Contains(report.String(), "declares other.example.net") {
+	if !strings.Contains(report.String(), `excludes "example.com"`) {
 		t.Errorf("report = %q, want the mismatch", report.String())
 	}
 }
 
 // The report of a session with no server names the command, then every candidate
-// that lost, and ends with ssh's own closing line and the ports that were tried.
+// A session with no server names the remote, then every candidate that lost.
+// Only a session piped to ssh ends with ssh's closing line and the ports tried;
+// a forwarded port has no ssh to answer to.
 func TestProbeReportClosesLikeSSH(t *testing.T) {
 	tlsPort := testserver.SSHEcho(t, "SSH-2.0-OpenSSH_9.6 host:other.example.net", "", "ssh", true)
 	sshPort := testserver.SSHEcho(t, "SSH-2.0-OpenSSH_9.6 host:other.example.net", "", "", false)
 
 	tun := loopbackTunnel(tlsPort, sshPort)
 
-	report := newReport()
-	_, err := tun.probeSSH(context.Background(), "SSH-2.0-client", report, false)
+	_, err := tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, true)
 	if !errors.Is(err, ErrNoServer) {
 		t.Fatalf("probe: got %v, want ErrNoServer", err)
 	}
 
-	lines := strings.Split(strings.TrimRight(report.String(), "\n"), "\n")
+	// The report is the body; the command printing it names itself in front.
+	lines := strings.Split(strings.TrimRight(err.Error(), "\n"), "\n")
 	if len(lines) != 4 {
-		t.Fatalf("report = %q, want a header, two candidates and the close line", report.String())
+		t.Fatalf("report = %q, want a header, two candidates and the close line", err.Error())
 	}
-	if lines[0] != "sclient: localhost: no usable server" {
-		t.Errorf("header = %q, want the command named", lines[0])
+	if lines[0] != "localhost: no usable server" {
+		t.Errorf("header = %q, want the remote named", lines[0])
 	}
 	for _, line := range lines[1:3] {
 		if !strings.HasPrefix(line, "  ") {
 			t.Errorf("candidate line %q, want it indented", line)
 		}
 	}
-	want := fmt.Sprintf(`sclient: Connection closed by "localhost" ports [%d, %d]`, sshPort, tlsPort)
+	want := fmt.Sprintf(`Connection closed by "localhost" ports [%d, %d]`, sshPort, tlsPort)
 	if lines[3] != want {
 		t.Errorf("close line = %q, want %q", lines[3], want)
+	}
+
+	_, err = tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, false)
+	if strings.Contains(err.Error(), "Connection closed by") {
+		t.Errorf("report for a forwarded port = %q, want no ssh close line", err.Error())
 	}
 }
 
@@ -274,7 +283,7 @@ func TestProbeTriesTLSForNamedIP(t *testing.T) {
 	tun.RemoteAddress = "127.0.0.1"
 	tun.ServerName = "127.0.0.1"
 
-	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false)
+	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, false)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -297,8 +306,9 @@ func TestSSHSessionRelaysTheWinner(t *testing.T) {
 	}
 	defer ln.Close()
 
+	var stderr bytes.Buffer
 	done := make(chan error, 1)
-	go func() { done <- sshAccept(context.Background(), tun, ln, io.Discard) }()
+	go func() { done <- sshAccept(context.Background(), tun, ln, &stderr) }()
 
 	conn, err := testserver.Dial(t, local.String())
 	if err != nil {
@@ -318,6 +328,10 @@ func TestSSHSessionRelaysTheWinner(t *testing.T) {
 	if string(got) != "SSH-2.0-tls-server\r\nKEXINIT-S\r\nGOODBYE\r\n" {
 		t.Errorf("the client saw %q, want the banner, the read-ahead glued to it, then GOODBYE", string(got))
 	}
+	// A forwarded connection says which port won.
+	if !strings.Contains(stderr.String(), "[connect]") {
+		t.Errorf("a forwarded session printed %q, want the [connect] line", stderr.String())
+	}
 
 	_ = done // the listener stays up; the session ended with it
 }
@@ -326,7 +340,7 @@ func TestSSHSessionRelaysTheWinner(t *testing.T) {
 func TestProbeKeepsTheReadAhead(t *testing.T) {
 	tlsPort := testserver.SSHEcho(t, "SSH-2.0-tls-server", "KEXINIT-S", "ssh", true)
 
-	chosen, err := loopbackTunnel(tlsPort, 1).probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false)
+	chosen, err := loopbackTunnel(tlsPort, 1).probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, false)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
@@ -349,9 +363,8 @@ func TestProbeRefusesSilentPeers(t *testing.T) {
 	tun := loopbackTunnel(tlsPort, sshPort)
 	tun.TCPTimeout = 100 * time.Millisecond
 
-	report := newReport()
 	start := time.Now()
-	_, err := tun.probeSSH(context.Background(), "SSH-2.0-client", report, false)
+	_, err := tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, false)
 	elapsed := time.Since(start)
 	if !errors.Is(err, ErrNoServer) {
 		t.Fatalf("probe: got %v, want ErrNoServer", err)
@@ -359,11 +372,13 @@ func TestProbeRefusesSilentPeers(t *testing.T) {
 	if elapsed > 400*time.Millisecond {
 		t.Errorf("probe ran %s against silent peers", elapsedText(elapsed))
 	}
-	if strings.Contains(report.String(), "closed network connection") {
-		t.Errorf("the banner write lost the race with the probe deadline: %q", report.String())
+
+	report := err.Error()
+	if strings.Contains(report, "closed network connection") {
+		t.Errorf("the banner write lost the race with the probe deadline: %q", report)
 	}
-	if !strings.Contains(report.String(), "read banner") {
-		t.Errorf("report = %q, want a banner read failure", report.String())
+	if !strings.Contains(report, "read banner") {
+		t.Errorf("report = %q, want a banner read failure", report)
 	}
 }
 
@@ -379,7 +394,7 @@ func TestProbeHonorsCallerDeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := tun.probeSSH(ctx, "SSH-2.0-client", io.Discard, false)
+	_, err := tun.probeSSH(ctx, "SSH-2.0-client", io.Discard, false, false)
 	elapsed := time.Since(start)
 	if !errors.Is(err, ErrNoServer) {
 		t.Fatalf("probe: got %v, want ErrNoServer", err)
@@ -399,7 +414,7 @@ func TestProbeDeclaredPlainWinsEarly(t *testing.T) {
 	tun.ServerName = "localhost"
 
 	start := time.Now()
-	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false)
+	chosen, err := tun.probeSSH(context.Background(), "SSH-2.0-client", io.Discard, false, false)
 	if err != nil {
 		t.Fatalf("probe: got %v, want ErrNoServer", err)
 	}
@@ -433,8 +448,10 @@ func TestSSHStdio(t *testing.T) {
 
 	tun := loopbackTunnel(tlsPort, sshPort)
 
+	// A piped session is ssh's terminal; it says nothing about itself.
+	var stderr bytes.Buffer
 	done := make(chan error, 1)
-	go func() { done <- tun.ServeSSH(context.Background(), StdioConn("-"), io.Discard, false, false) }()
+	go func() { done <- tun.ServeSSH(context.Background(), StdioConn("-"), &stderr, false, false) }()
 
 	select {
 	case err := <-done:
@@ -452,6 +469,9 @@ func TestSSHStdio(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(got), "SSH-2.0-tls-server\r\n") || !strings.Contains(string(got), "GOODBYE") {
 		t.Errorf("stdio: got %q, want the TLS banner then GOODBYE", string(got))
+	}
+	if strings.Contains(stderr.String(), "[connect]") {
+		t.Errorf("stdio: a piped session printed %q, want only the failure report", stderr.String())
 	}
 }
 
@@ -650,7 +670,7 @@ func TestBannerMismatch(t *testing.T) {
 		{"guest.example.com", "SSH-2.0-x host:vms.example.com,guest.example.com", ""},
 		{"Guest.example.com", "SSH-2.0-x HOST:guest.example.com", ""},
 		{"guest.example.com", "SSH-2.0-x tlsrouter-v0.9.4 host:vms.example.com",
-			`banner "SSH-2.0-x tlsrouter-v0.9.4 host:vms.example.com" declares vms.example.com, not "guest.example.com"`},
+			`banner "SSH-2.0-x tlsrouter-v0.9.4 host:vms.example.com" excludes "guest.example.com"`},
 		{"", "SSH-2.0-x host:vms.example.com", ""},          // no name asked: nothing to match
 		{"192.0.2.1", "SSH-2.0-x host:vms.example.com", ""}, // an IP is not contradicted by names
 	}
