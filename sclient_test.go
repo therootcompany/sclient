@@ -48,7 +48,7 @@ func TestTLSConfigServerName(t *testing.T) {
 	}
 	for _, c := range cases {
 		tun := &Tunnel{RemoteAddress: c.remote, ServerName: c.servername}
-		if got := tun.tlsConfig().ServerName; got != c.want {
+		if got := tun.tlsConfig(nil).ServerName; got != c.want {
 			t.Errorf("tlsConfig(remote %q, servername %q): got %q, want %q",
 				c.remote, c.servername, got, c.want)
 		}
@@ -73,7 +73,7 @@ func TestDialIPRemoteNamesItself(t *testing.T) {
 	defer shutdown()
 
 	tun := &Tunnel{RemoteAddress: host, RemotePort: port}
-	conn, err := tun.dial(context.Background())
+	conn, err := tun.dial(context.Background(), nil)
 	if err == nil {
 		_ = conn.Close()
 		t.Fatalf("dial %s: the untrusted certificate was accepted", host)
@@ -84,7 +84,7 @@ func TestDialIPRemoteNamesItself(t *testing.T) {
 	}
 
 	insecure := &Tunnel{RemoteAddress: host, RemotePort: port, InsecureSkipVerify: true}
-	conn, err = insecure.dial(context.Background())
+	conn, err = insecure.dial(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("dial -k %s: %v", host, err)
 	}
@@ -692,7 +692,7 @@ func TestDialHonorsTLSDeadline(t *testing.T) {
 		{RemoteAddress: deadHost, RemotePort: deadPort, ServerName: "localhost", TLSTimeout: 100 * time.Millisecond}, // explicit
 	} {
 		start := time.Now()
-		conn, err := tun.dial(context.Background())
+		conn, err := tun.dial(context.Background(), nil)
 		elapsed := time.Since(start)
 		if err == nil {
 			_ = conn.Close()
