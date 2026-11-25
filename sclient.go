@@ -1,6 +1,7 @@
 package sclient
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -27,6 +29,9 @@ type Tunnel struct {
 	Silent     bool
 	TCPTimeout time.Duration
 	TLSTimeout time.Duration
+	// SSHPort turns on SSH mode: the plain SSH port probed alongside
+	// RemoteAddress:RemotePort. Zero is a plain TLS tunnel.
+	SSHPort int
 }
 
 func (t *Tunnel) Remote() string {
@@ -61,6 +66,26 @@ const (
 	handshakeMultiplier  = 3
 )
 
+// A dial fails in one of three ways, and the caller says which: the connect
+// never finished, the handshake ran past its deadline, or the handshake never
+// completed at all.
+var (
+	errConnectTimeout   = errors.New("connect timed out")
+	errHandshakeTimeout = errors.New("handshake timed out")
+	errHandshakeFailed  = errors.New("handshake failed")
+)
+
+// handshakeFailure names the cause of a handshake that never completed, so the
+// caller sees the phase and the reason instead of Go's jargon.
+func handshakeFailure(err error) error {
+	if errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) {
+		return fmt.Errorf("%w: server closed the connection", errHandshakeFailed)
+	}
+	return fmt.Errorf("%w: %s", errHandshakeFailed, err)
+}
+
 func (t *Tunnel) handshakeDeadline(connect time.Duration) time.Duration {
 	if t.TLSTimeout > 0 {
 		return t.TLSTimeout
@@ -76,34 +101,46 @@ func (t *Tunnel) connectTimeout() time.Duration {
 }
 
 func (t *Tunnel) connect(ctx context.Context, address string) (net.Conn, error) {
-	return (&net.Dialer{Timeout: t.connectTimeout()}).DialContext(ctx, "tcp", address)
+	return (&net.Dialer{}).DialContext(ctx, "tcp", address)
 }
 
 func (t *Tunnel) handshake(ctx context.Context, conn net.Conn, protos []string) (*tls.Conn, error) {
 	remote := tls.Client(conn, t.tlsConfig(protos))
 	if err := remote.HandshakeContext(ctx); err != nil {
 		_ = conn.Close()
-		return nil, err
+		return nil, handshakeFailure(err)
 	}
 	return remote, nil
 }
 
-// dial connects, then handshakes, each under its own deadline.
+// dial connects, then handshakes, each under its own deadline. The deadline is
+// carried by the child context, so the sentinel comes from the context, not the
+// error - the net package reports a timeout in a couple of different shapes.
 func (t *Tunnel) dial(ctx context.Context, protos []string) (*tls.Conn, error) {
 	connect := t.connectTimeout()
-	ctx, cancel := context.WithTimeout(ctx, connect+t.handshakeDeadline(connect))
-	defer cancel()
+	connectCtx, cancelConnect := context.WithTimeout(ctx, connect)
+	defer cancelConnect()
 
 	start := time.Now()
-	conn, err := t.connect(ctx, t.Remote())
+	conn, err := t.connect(connectCtx, t.Remote())
 	if err != nil {
+		if connectCtx.Err() == context.DeadlineExceeded {
+			return nil, errConnectTimeout
+		}
 		return nil, err
 	}
 
-	handshake, cancelHandshake := context.WithTimeout(ctx, t.handshakeDeadline(time.Since(start)))
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, t.handshakeDeadline(time.Since(start)))
 	defer cancelHandshake()
 
-	return t.handshake(handshake, conn, protos)
+	remote, err := t.handshake(handshakeCtx, conn, protos)
+	if err != nil {
+		if handshakeCtx.Err() == context.DeadlineExceeded {
+			return nil, errHandshakeTimeout
+		}
+		return nil, err
+	}
+	return remote, nil
 }
 
 // Deprecated: DialAndListen is the v1.5.1 entry point - the lifecycle in one
@@ -177,12 +214,19 @@ func (t *Tunnel) Listen() (net.Listener, error) {
 }
 
 func (t *Tunnel) Serve(ctx context.Context, local net.Conn) error {
-	remote, err := t.dial(ctx, t.NextProtos)
+	client := bufio.NewReaderSize(local, 32*1024)
+	protos := sniffALPN(ctx, t.NextProtos, client, local)
+
+	remote, err := t.dial(ctx, protos)
 	if err != nil {
 		_ = local.Close()
 		return fmt.Errorf("%s: %w", t.Remote(), err)
 	}
 
+	if err := drainTo(remote, client); err != nil {
+		_ = remote.Close()
+		return fmt.Errorf("relay: %w", err)
+	}
 	return pipeContext(ctx, local, remote)
 }
 
@@ -232,6 +276,13 @@ func (rw *stdnet) SetDeadline(time.Time) error      { return nil }
 func (rw *stdnet) SetReadDeadline(time.Time) error  { return nil }
 func (rw *stdnet) SetWriteDeadline(time.Time) error { return nil }
 
+// isStdio reports whether the local side is stdin and stdout - ssh's
+// ProxyCommand - rather than a connection the listener accepted.
+func isStdio(conn net.Conn) bool {
+	_, ok := conn.(*stdnet)
+	return ok
+}
+
 // displayAddr prints loopback as localhost.
 func displayAddr(addr net.Addr) string {
 	host, port, err := net.SplitHostPort(addr.String())
@@ -242,6 +293,21 @@ func displayAddr(addr net.Addr) string {
 		return net.JoinHostPort("localhost", port)
 	}
 	return addr.String()
+}
+
+// drainTo writes the bytes the version exchange read ahead and left in the
+// buffer, so the relay can copy the raw conn without a buffer of its own.
+func drainTo(dst io.Writer, r *bufio.Reader) error {
+	n := r.Buffered()
+	if n == 0 {
+		return nil
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return err
+	}
+	_, err := dst.Write(buf)
+	return err
 }
 
 // pipe relays local <-> remote in both directions, ending each stream when its
