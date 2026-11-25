@@ -16,17 +16,37 @@ See https://telebit.cloud/sclient for more info.
 
 In the simplest case you'll just be setting a ServerName and connection info:
 
-	servername := "example.com"
-
-	sclient := &sclient.Tunnel{
-		ServerName:         servername,
-		RemoteAddress:      servername,
-		RemotePort:         443,
-		LocalAddress:       "localhost",
-		LocalPort:          3000,
+	tun := &sclient.Tunnel{
+		RemoteAddress: "example.com",
+		RemotePort:    443,
+		LocalAddress:  "localhost",
+		LocalPort:     3000,
 	}
 
-	err := sclient.DialAndListen()
+	listener, err := tun.Listen()
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return err
+		}
+		go func() { _ = tun.Serve(ctx, conn) }()
+	}
+
+Probe dials the remote once and hangs up. Listen binds the local address. Serve
+relays one accepted connection; canceling ctx ends the session in flight. The
+accept loop, the reporting, and the exit codes belong to the caller. Stdio is
+one dial with nothing to bind, so it needs no probe: `StdioConn("-")` is stdin
+and stdout as a `net.Conn`.
+
+# Deprecated
+
+`DialAndListen` is the v1.5.1 lifecycle in one call, progress lines on stderr.
+`Silent` quiets those lines; it says nothing about what a caller prints.
 
 # Try the CLI
 
