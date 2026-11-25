@@ -701,13 +701,30 @@ func TestDialHonorsTLSDeadline(t *testing.T) {
 			_ = conn.Close()
 			t.Fatalf("dial(%s): the handshake never timed out", tun.Remote())
 		}
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("dial: got %v, want a deadline exceeded", err)
+		if !errors.Is(err, errHandshakeTimeout) {
+			t.Errorf("dial: got %v, want the handshake deadline", err)
 		}
 		// The handshake deadline fired, not the 5s connect default.
 		if elapsed > time.Second {
 			t.Errorf("dial: took %s, want well under the %s connect default", elapsed, defaultTCPDeadline)
 		}
+	}
+}
+
+func TestDialHandshakeFailed(t *testing.T) {
+	port := testserver.CloseImmediately(t)
+
+	tun := &Tunnel{RemoteAddress: "127.0.0.1", RemotePort: port, InsecureSkipVerify: true}
+	_, err := tun.dial(context.Background(), nil)
+	if err == nil {
+		t.Fatal("dial: the handshake never failed")
+	}
+	if !errors.Is(err, errHandshakeFailed) {
+		t.Errorf("dial: got %v, want the handshake failure", err)
+	}
+	want := "handshake failed: server closed the connection"
+	if got := err.Error(); got != want {
+		t.Errorf("dial: got %q, want %q", got, want)
 	}
 }
 
