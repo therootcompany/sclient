@@ -75,9 +75,13 @@ fn_listener() (
 )
 
 fn_timeout() (
-	# 192.0.2.1 (RFC 5180) is unroutable, so the connect waits for a deadline.
+	# 192.0.2.1 (RFC 5180) is unroutable, so the connect waits for a deadline and
+	# the command exits 1 on the failed dial.
 	b_start=$(date +%s)
-	"$g_bin" --tcp-timeout 1 192.0.2.1:443 - < /dev/null > /dev/null 2>&1
+	if "$g_bin" --tcp-timeout 1 192.0.2.1:443 - < /dev/null > /dev/null 2>&1; then
+		printf 'timeout: a dead remote should exit 1\n' >&2
+		exit 1
+	fi
 	b_elapsed=$(( $(date +%s) - b_start ))
 	if test "$b_elapsed" -ge 3; then
 		printf 'timeout: --tcp-timeout 1 took %ss, want under 3s\n' "$b_elapsed" >&2
@@ -87,7 +91,10 @@ fn_timeout() (
 
 	# No flag: the 5s default must still bound the dial.
 	b_start=$(date +%s)
-	"$g_bin" 192.0.2.1:443 - < /dev/null > /dev/null 2>&1
+	if "$g_bin" 192.0.2.1:443 - < /dev/null > /dev/null 2>&1; then
+		printf 'timeout: a dead remote should exit 1\n' >&2
+		exit 1
+	fi
 	b_elapsed=$(( $(date +%s) - b_start ))
 	if test "$b_elapsed" -lt 4 || test "$b_elapsed" -ge 10; then
 		printf 'timeout: the default took %ss, want about 5s\n' "$b_elapsed" >&2

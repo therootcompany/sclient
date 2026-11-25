@@ -146,6 +146,11 @@ sclient --servername "../../../.hidden/private.txt" -k example.com localhost:300
 
 # API
 
+A tunnel is `Probe`, `Listen`, and `Serve`: check the remote, bind the local
+port, accept, and relay each connection. Those three never print - the caller
+owns the output and the exit codes. The deprecated `DialAndListen` writes its
+own progress lines to stderr; `Silent` quiets the progress lines.
+
 See [Go Docs](https://pkg.go.dev/github.com/therootcompany/sclient).
 
 # Build from source

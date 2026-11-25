@@ -22,9 +22,19 @@ type Tunnel struct {
 	InsecureSkipVerify bool
 	NextProtos         []string
 	ServerName         string
-	Silent             bool
-	TCPTimeout         time.Duration
-	TLSTimeout         time.Duration
+	// Deprecated: Silent only quiets the progress lines of the deprecated
+	// DialAndListen. A command decides its own output.
+	Silent     bool
+	TCPTimeout time.Duration
+	TLSTimeout time.Duration
+}
+
+func (t *Tunnel) Remote() string {
+	return net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
+}
+
+func (t *Tunnel) Local() string {
+	return net.JoinHostPort(t.LocalAddress, strconv.Itoa(t.LocalPort))
 }
 
 // tlsConfig is the client config for one dial. The name defaults to the remote
@@ -55,7 +65,7 @@ func (t *Tunnel) handshakeDeadline(connect time.Duration) time.Duration {
 }
 
 // dial connects, then handshakes, each under its own deadline.
-func (t *Tunnel) dial(ctx context.Context, remote string) (*tls.Conn, error) {
+func (t *Tunnel) dial(ctx context.Context) (*tls.Conn, error) {
 	connect := t.TCPTimeout
 	if connect <= 0 {
 		connect = defaultTCPDeadline
@@ -64,7 +74,7 @@ func (t *Tunnel) dial(ctx context.Context, remote string) (*tls.Conn, error) {
 	defer cancel()
 
 	start := time.Now()
-	conn, err := (&net.Dialer{Timeout: connect}).DialContext(ctx, "tcp", remote)
+	conn, err := (&net.Dialer{Timeout: connect}).DialContext(ctx, "tcp", t.Remote())
 	if err != nil {
 		return nil, err
 	}
@@ -80,61 +90,43 @@ func (t *Tunnel) dial(ctx context.Context, remote string) (*tls.Conn, error) {
 	return remoteConn, nil
 }
 
-// DialAndListen runs the tunnel with a context that is never canceled.
+// Deprecated: DialAndListen is the v1.5.1 entry point - the lifecycle in one
+// call, progress lines included (quieted by the deprecated Silent field).
 func (t *Tunnel) DialAndListen() error {
-	return t.DialAndListenContext(context.Background())
+	return t.dialAndListen(context.Background())
 }
 
-// DialAndListenContext connects to the remote address, then listens locally;
-// each local connection gets its own remote connection. It runs until the tunnel
-// finishes, fails, or ctx is canceled.
-//
-// Canceling ctx closes the listener, ends every open connection, and returns nil.
-func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
-	remote := net.JoinHostPort(t.RemoteAddress, strconv.Itoa(t.RemotePort))
-
-	// use stdin/stdout: one connection, one dial
+// dialAndListen is DialAndListen with a context, so the tests can stop a
+// listener that would otherwise run forever.
+func (t *Tunnel) dialAndListen(ctx context.Context) error {
 	if t.LocalAddress == "-" || t.LocalAddress == "|" {
-		var name string
-		network := "stdio"
-		if t.LocalAddress == "|" {
-			name = "pipe"
-		} else {
-			name = "stdin"
+		local := StdioConn(t.LocalAddress)
+		if !t.Silent {
+			_, _ = fmt.Fprintf(os.Stderr, "(connected to %s and reading from %s)\n",
+				t.Remote(), local.RemoteAddr())
 		}
-		stdioConn := &stdnet{os.Stdin, os.Stdout, &stdaddr{net.UnixAddr{Name: name, Net: network}}}
-		t.handleConnection(ctx, remote, stdioConn)
-		return nil
+		return t.Serve(ctx, local)
 	}
 
-	// use net.Conn
-	// Probe once before binding, so the operator knows early whether the remote is
-	// alive; each local connection dials on its own.
-	probeConn, err := t.dial(ctx, remote)
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n", remote, err)
-	} else {
-		_ = probeConn.Close()
+	if err := t.Probe(ctx); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[warn] '%s' may not be accepting connections: %s\n",
+			t.Remote(), err)
 	}
 
-	local := net.JoinHostPort(t.LocalAddress, strconv.Itoa(t.LocalPort))
-	ln, err := net.Listen("tcp", local)
+	ln, err := t.Listen()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = ln.Close() }()
 
-	if !t.Silent {
-		_, _ = fmt.Fprintf(os.Stderr, "[listening] %s <= %s\n", remote, local)
-	}
-
-	// Canceling ctx closes the listener, so Accept returns. Connections already
-	// running end on the same ctx.
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
 	}()
+
+	if !t.Silent {
+		_, _ = fmt.Fprintf(os.Stderr, "[listening] %s <= %s\n", t.Remote(), t.Local())
+	}
 
 	for {
 		conn, err := ln.Accept()
@@ -144,7 +136,51 @@ func (t *Tunnel) DialAndListenContext(ctx context.Context) error {
 			}
 			return fmt.Errorf("local listener: %w", err)
 		}
-		go t.handleConnection(ctx, remote, conn)
+		go func() {
+			if !t.Silent {
+				_, _ = fmt.Fprintf(os.Stderr, "[connect] %s => %s\n",
+					displayAddr(conn.RemoteAddr()), t.Remote())
+			}
+			_ = t.Serve(ctx, conn)
+		}()
+	}
+}
+
+// Probe dials the remote once and hangs up. An error means the remote is not
+// answering; saying so is the caller's job.
+func (t *Tunnel) Probe(ctx context.Context) error {
+	conn, err := t.dial(ctx)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+func (t *Tunnel) Listen() (net.Listener, error) {
+	return net.Listen("tcp", t.Local())
+}
+
+func (t *Tunnel) Serve(ctx context.Context, local net.Conn) error {
+	remote, err := t.dial(ctx)
+	if err != nil {
+		_ = local.Close()
+		return fmt.Errorf("%s: %w", t.Remote(), err)
+	}
+
+	return pipeContext(ctx, local, remote)
+}
+
+// StdioConn is stdin and stdout as a local connection, for Serve. local is the
+// LocalAddress: "-" for stdin, "|" for a pipe.
+func StdioConn(local string) net.Conn {
+	name := "stdin"
+	if local == "|" {
+		name = "pipe"
+	}
+	return &stdnet{
+		in:   os.Stdin,
+		out:  os.Stdout,
+		addr: &stdaddr{net.UnixAddr{Name: name, Net: "stdio"}},
 	}
 }
 
@@ -171,6 +207,14 @@ func (rw *stdnet) Close() error {
 func (rw *stdnet) RemoteAddr() net.Addr {
 	return rw.addr
 }
+func (rw *stdnet) LocalAddr() net.Addr {
+	return rw.addr
+}
+
+// A pipe has no deadlines; the file behind it cannot be timed out.
+func (rw *stdnet) SetDeadline(time.Time) error      { return nil }
+func (rw *stdnet) SetReadDeadline(time.Time) error  { return nil }
+func (rw *stdnet) SetWriteDeadline(time.Time) error { return nil }
 
 // displayAddr prints loopback as localhost.
 func displayAddr(addr net.Addr) string {
@@ -182,12 +226,6 @@ func displayAddr(addr net.Addr) string {
 		return net.JoinHostPort("localhost", port)
 	}
 	return addr.String()
-}
-
-// not all of net.Conn, just RWC and RemoteAddr()
-type netReadWriteCloser interface {
-	io.ReadWriteCloser
-	RemoteAddr() net.Addr
 }
 
 // pipe relays local <-> remote in both directions, ending each stream when its
@@ -207,62 +245,54 @@ func pipe(local io.ReadWriteCloser, remote io.ReadWriteCloser) error {
 	return errors.Join(localErr, remoteErr)
 }
 
+// pipeContext is pipe that can be canceled: canceling ctx closes both sides and
+// returns the cause, so an open session ends cleanly rather than hanging.
+func pipeContext(ctx context.Context, local, remote io.ReadWriteCloser) error {
+	done := make(chan struct{})
+	var pipeErr error
+	go func() {
+		defer close(done)
+		pipeErr = pipe(local, remote)
+	}()
+
+	select {
+	case <-done:
+		return pipeErr
+	case <-ctx.Done():
+		_ = local.Close()
+		_ = remote.Close()
+		<-done
+		return ctx.Err()
+	}
+}
+
 // pipeToRemote copies local to remote, then half-closes the remote so a
 // keep-alive server sees EOF without losing its buffered answer.
 func pipeToRemote(local io.Reader, remote io.WriteCloser) error {
 	_, err := io.Copy(remote, local)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, os.ErrClosed) {
 		return err
 	}
 	if cw, ok := remote.(interface{ CloseWrite() error }); ok {
-		return cw.CloseWrite()
+		if err := cw.CloseWrite(); err != nil && !errors.Is(err, net.ErrClosed) {
+			return err
+		}
+		return nil
 	}
-	return remote.Close()
+	if err := remote.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return err
+	}
+	return nil
 }
 
 // pipeToLocal copies remote to local, then hangs up on the local side.
 func pipeToLocal(remote io.Reader, local io.WriteCloser) error {
 	_, err := io.Copy(local, remote)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, os.ErrClosed) {
 		return err
 	}
-	return local.Close()
-}
-
-func (t *Tunnel) handleConnection(ctx context.Context, remote string, conn netReadWriteCloser) {
-	remoteConn, err := t.dial(ctx, remote)
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[error] (remote) %s\n", err)
-		_ = conn.Close()
-		return
+	if err := local.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, os.ErrClosed) {
+		return err
 	}
-
-	if !t.Silent {
-		if conn.RemoteAddr().Network() == "stdio" {
-			_, _ = fmt.Fprintf(os.Stderr, "(connected to %s and reading from %s)\n",
-				remote, conn.RemoteAddr().String())
-		} else {
-			_, _ = fmt.Fprintf(os.Stderr, "[connect] %s => %s\n",
-				displayAddr(conn.RemoteAddr()), remote)
-		}
-	}
-
-	// pipe() copies both directions and closes both when either side ends.
-	// Canceling ctx closes both early.
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := pipe(conn, remoteConn); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "[copy error] %s\n", err)
-		}
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		_ = conn.Close()
-		_ = remoteConn.Close()
-		<-done
-	}
+	return nil
 }
