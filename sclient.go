@@ -37,16 +37,20 @@ func (t *Tunnel) Local() string {
 	return net.JoinHostPort(t.LocalAddress, strconv.Itoa(t.LocalPort))
 }
 
-// tlsConfig is the client config for one dial. The name defaults to the remote
-// address. Go sends no SNI for an IP, but still checks it against the cert.
-func (t *Tunnel) tlsConfig() *tls.Config {
-	serverName := t.ServerName
-	if serverName == "" {
-		serverName = t.RemoteAddress
+// serverName is the name the connection is for: ServerName, or the remote address.
+func (t *Tunnel) serverName() string {
+	if t.ServerName != "" {
+		return t.ServerName
 	}
+	return t.RemoteAddress
+}
+
+// tlsConfig is the client config for one dial; protos is the ALPN list to offer.
+// Go sends no SNI for an IP, but still checks it against the cert.
+func (t *Tunnel) tlsConfig(protos []string) *tls.Config {
 	return &tls.Config{
-		ServerName:         serverName,
-		NextProtos:         t.NextProtos,
+		ServerName:         t.serverName(),
+		NextProtos:         protos,
 		InsecureSkipVerify: t.InsecureSkipVerify,
 	}
 }
@@ -64,17 +68,34 @@ func (t *Tunnel) handshakeDeadline(connect time.Duration) time.Duration {
 	return max(handshakeMultiplier*connect, minHandshakeDeadline)
 }
 
-// dial connects, then handshakes, each under its own deadline.
-func (t *Tunnel) dial(ctx context.Context) (*tls.Conn, error) {
-	connect := t.TCPTimeout
-	if connect <= 0 {
-		connect = defaultTCPDeadline
+func (t *Tunnel) connectTimeout() time.Duration {
+	if t.TCPTimeout > 0 {
+		return t.TCPTimeout
 	}
+	return defaultTCPDeadline
+}
+
+func (t *Tunnel) connect(ctx context.Context, address string) (net.Conn, error) {
+	return (&net.Dialer{Timeout: t.connectTimeout()}).DialContext(ctx, "tcp", address)
+}
+
+func (t *Tunnel) handshake(ctx context.Context, conn net.Conn, protos []string) (*tls.Conn, error) {
+	remote := tls.Client(conn, t.tlsConfig(protos))
+	if err := remote.HandshakeContext(ctx); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return remote, nil
+}
+
+// dial connects, then handshakes, each under its own deadline.
+func (t *Tunnel) dial(ctx context.Context, protos []string) (*tls.Conn, error) {
+	connect := t.connectTimeout()
 	ctx, cancel := context.WithTimeout(ctx, connect+t.handshakeDeadline(connect))
 	defer cancel()
 
 	start := time.Now()
-	conn, err := (&net.Dialer{Timeout: connect}).DialContext(ctx, "tcp", t.Remote())
+	conn, err := t.connect(ctx, t.Remote())
 	if err != nil {
 		return nil, err
 	}
@@ -82,12 +103,7 @@ func (t *Tunnel) dial(ctx context.Context) (*tls.Conn, error) {
 	handshake, cancelHandshake := context.WithTimeout(ctx, t.handshakeDeadline(time.Since(start)))
 	defer cancelHandshake()
 
-	remoteConn := tls.Client(conn, t.tlsConfig())
-	if err := remoteConn.HandshakeContext(handshake); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	return remoteConn, nil
+	return t.handshake(handshake, conn, protos)
 }
 
 // Deprecated: DialAndListen is the v1.5.1 entry point - the lifecycle in one
@@ -149,7 +165,7 @@ func (t *Tunnel) dialAndListen(ctx context.Context) error {
 // Probe dials the remote once and hangs up. An error means the remote is not
 // answering; saying so is the caller's job.
 func (t *Tunnel) Probe(ctx context.Context) error {
-	conn, err := t.dial(ctx)
+	conn, err := t.dial(ctx, t.NextProtos)
 	if err != nil {
 		return err
 	}
@@ -161,7 +177,7 @@ func (t *Tunnel) Listen() (net.Listener, error) {
 }
 
 func (t *Tunnel) Serve(ctx context.Context, local net.Conn) error {
-	remote, err := t.dial(ctx)
+	remote, err := t.dial(ctx, t.NextProtos)
 	if err != nil {
 		_ = local.Close()
 		return fmt.Errorf("%s: %w", t.Remote(), err)
