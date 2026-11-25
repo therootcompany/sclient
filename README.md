@@ -39,7 +39,10 @@ A poor man's (or Windows user's) makeshift replacement for `openssl s_client`,
 - [Install](#install)
 - [Usage](#usage)
 - [Examples](#examples)
+- [SSH mode](#ssh-mode)
+- [API](#api)
 - [Build from Source](#build-from-source)
+- [Tests](#tests)
 
 # Install
 
@@ -73,10 +76,14 @@ sclient [flags] <remote> <local>
   - `version`, `-V`, `--version` print the version, the commit, and the build date
   - `help`, `--help` print the usage and exit
   - `-s`, `--silent` less verbose logging
+  - `-v`, `--verbose` name every probe candidate, its version string, and why it
+    lost (SSH mode); also turns on progress lines for a session on a pipe
   - `-k`, `--insecure` ignore invalid TLS (SSL/HTTPS) certificates
   - `--servername <domain>` spoof SNI (to disable use IP as &lt;remote&gt; and do
     not use this option)
   - `--alpn <protocol-list>` acceptable protocols, ex: `h2,http/1.1` `ssh`
+  - `--ssh`, `--ssh-port <n>` SSH mode: probe the plain SSH port alongside the
+    TLS port (`--ssh` is shorthand for 22; naming 0 is a usage error, not "off")
   - `--stderr <path>` a file or device, ex `sclient.log`, `/dev/tty`, `/dev/null`
   - `--tcp-timeout <seconds>` seconds for the TCP connect, DNS included
     (0 = default, 5s)
@@ -144,6 +151,52 @@ sclient --servername "Robert'); DROP TABLE Students;" -k example.com localhost:3
 sclient --servername "../../../.hidden/private.txt" -k example.com localhost:3000
 ```
 
+# SSH mode
+
+One name can answer on two transports: plain SSH on 22, and SSH wrapped in TLS on
+443 (SNI plus ALPN). `--ssh-port` dials both at the same time and takes the one
+that is the SSH server for that name.
+
+```bash
+sclient --ssh-port 22 example.com:443 localhost:3000
+ssh -o ProxyCommand='sclient --ssh-port %p %h:443' example.com
+```
+
+- TLS that negotiates the ALPN you asked for is ssh over TLS: use it.
+- TLS that handshakes but will not negotiate that ALPN has no ssh route for this
+  name - it is closed at the handshake and never sees the version string.
+- Otherwise, if the plain port answers with an SSH version string, it is plain ssh.
+- Neither answers: one report, spoken by the command, with every candidate that
+  lost indented under it:
+
+  ```
+  sclient: example.com: no usable server
+    tls 443: version string "SSH-2.0-OpenSSH_9.6 host:other.example.net" excludes "example.com"
+    ssh 22: timed out after 1.2s
+  ```
+
+  A session piped to ssh (`ProxyCommand`) also gets ssh's own closing line, so the
+  "Connection closed by UNKNOWN port 65535" ssh prints has a cause:
+
+  ```
+  Connection closed by "example.com" ports [22, 443]
+  ```
+
+Progress goes where a human is watching: a forwarded port (`localhost:3000`)
+prints `[listening]` and a `[connect]` line naming the port that won. A session on
+a pipe - ssh's `ProxyCommand` - has its stderr on the user's terminal, so it says
+nothing while it works; the failure report is still printed, and `--verbose` turns
+the progress lines on.
+
+A server can name itself in the version string's comment (RFC 4253 section 4.2),
+ex `SSH-2.0-OpenSSH_9.6 host:example.com`. When a version string declares hosts
+and none of them is the name being dialled, that candidate is refused. A version
+string that declares nothing is accepted - the rule is opt-in per server.
+
+With no SSH mode, the local side is sniffed: an `SSH-` version string in the first
+bytes means the client is ssh, so `ssh` is offered as the ALPN. Stdio has no read
+deadline, so it is not sniffed - name the protocol with `--ssh-port` or `--alpn`.
+
 # API
 
 A tunnel is `Probe`, `Listen`, and `Serve`: check the remote, bind the local
@@ -187,4 +240,5 @@ go run github.com/therootcompany/sclient/cmd/sclient example.com:443 localhost:3
 ```bash
 go test ./...                  # unit and integration tests, no network needed
 ./tests/smoke.sh example.com   # live smoke test against a real TLS remote
+./tests/ssh-smoke.sh           # SSH mode against the fleet, version exchange only
 ```

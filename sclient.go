@@ -1,6 +1,7 @@
 package sclient
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -27,6 +28,9 @@ type Tunnel struct {
 	Silent     bool
 	TCPTimeout time.Duration
 	TLSTimeout time.Duration
+	// SSHPort turns on SSH mode: the plain SSH port probed alongside
+	// RemoteAddress:RemotePort. Zero is a plain TLS tunnel.
+	SSHPort int
 }
 
 func (t *Tunnel) Remote() string {
@@ -177,12 +181,19 @@ func (t *Tunnel) Listen() (net.Listener, error) {
 }
 
 func (t *Tunnel) Serve(ctx context.Context, local net.Conn) error {
-	remote, err := t.dial(ctx, t.NextProtos)
+	client := bufio.NewReaderSize(local, 32*1024)
+	protos := sniffALPN(ctx, t.NextProtos, client, local)
+
+	remote, err := t.dial(ctx, protos)
 	if err != nil {
 		_ = local.Close()
 		return fmt.Errorf("%s: %w", t.Remote(), err)
 	}
 
+	if err := drainTo(remote, client); err != nil {
+		_ = remote.Close()
+		return fmt.Errorf("relay: %w", err)
+	}
 	return pipeContext(ctx, local, remote)
 }
 
@@ -232,6 +243,13 @@ func (rw *stdnet) SetDeadline(time.Time) error      { return nil }
 func (rw *stdnet) SetReadDeadline(time.Time) error  { return nil }
 func (rw *stdnet) SetWriteDeadline(time.Time) error { return nil }
 
+// isStdio reports whether the local side is stdin and stdout - ssh's
+// ProxyCommand - rather than a connection the listener accepted.
+func isStdio(conn net.Conn) bool {
+	_, ok := conn.(*stdnet)
+	return ok
+}
+
 // displayAddr prints loopback as localhost.
 func displayAddr(addr net.Addr) string {
 	host, port, err := net.SplitHostPort(addr.String())
@@ -242,6 +260,21 @@ func displayAddr(addr net.Addr) string {
 		return net.JoinHostPort("localhost", port)
 	}
 	return addr.String()
+}
+
+// drainTo writes the bytes the version exchange read ahead and left in the
+// buffer, so the relay can copy the raw conn without a buffer of its own.
+func drainTo(dst io.Writer, r *bufio.Reader) error {
+	n := r.Buffered()
+	if n == 0 {
+		return nil
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return err
+	}
+	_, err := dst.Write(buf)
+	return err
 }
 
 // pipe relays local <-> remote in both directions, ending each stream when its

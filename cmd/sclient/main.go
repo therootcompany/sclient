@@ -28,6 +28,7 @@ const (
 const (
 	defaultRemotePort = 443
 	defaultLocalHost  = "localhost"
+	defaultSSHPort    = 22
 )
 
 // GoReleaser sets these at release time with -X main.version, -X main.commit,
@@ -70,6 +71,9 @@ type MainConfig struct {
 	insecure   bool
 	servername string
 	silent     bool
+	verbose    bool
+	ssh        bool
+	sshPort    int
 	stderrPath string
 	tcpTimeout float64
 	tlsTimeout float64
@@ -147,6 +151,9 @@ func usage(fs *flag.FlagSet) {
 	_, _ = fmt.Fprintf(w, "      (example.com:443 <= localhost:3000)\n")
 	_, _ = fmt.Fprintf(w, "\n   ex: %s example.com:8443 0.0.0.0:4080\n", name)
 	_, _ = fmt.Fprintf(w, "\n   ex: %s example.com:443 -\n", name)
+	_, _ = fmt.Fprintf(w, "\n   ex: %s --ssh-port 22 example.com:443 localhost:3000\n", name)
+	_, _ = fmt.Fprintf(w, "      (SSH mode: the plain SSH port and the TLS port are probed at once)\n")
+	_, _ = fmt.Fprintf(w, "\n   ex: ssh -o ProxyCommand='%s --ssh-port %%p %%h:443' example.com\n", name)
 	_, _ = fmt.Fprintf(w, "\nFLAGS\n")
 	fs.PrintDefaults()
 	_, _ = fmt.Fprintln(w)
@@ -166,6 +173,10 @@ func main() {
 	fs.StringVar(&cfg.alpn, "alpn", "", "acceptable protocols, ex: 'h2,http/1.1' 'http/1.1' 'ssh'")
 	fs.BoolVar(&cfg.insecure, "k", false, "alias for --insecure")
 	fs.BoolVar(&cfg.silent, "s", false, "alias of --silent")
+	fs.BoolVar(&cfg.verbose, "v", false, "alias of --verbose")
+	fs.BoolVar(&cfg.verbose, "verbose", false, "name every probe candidate, its version string, and why it lost (SSH mode)")
+	fs.BoolVar(&cfg.ssh, "ssh", false, "SSH mode shorthand for --ssh-port 22")
+	fs.IntVar(&cfg.sshPort, "ssh-port", 0, "plain SSH port to probe alongside <remote>; turns on SSH mode (0 = plain TLS tunnel)")
 	fs.StringVar(&cfg.servername, "servername", "", "specify a servername different from <remote> (to disable SNI use an IP as <remote> and do not use this option)")
 	fs.BoolVar(&cfg.insecure, "insecure", false, "ignore bad TLS (SSL/HTTPS) certificates")
 	fs.BoolVar(&cfg.silent, "silent", false, "less verbose output")
@@ -176,6 +187,7 @@ func main() {
 	_ = fs.Bool("version", false, "alias of -V")
 	fs.Usage = func() { usage(fs) }
 
+	// Before parsing: -V and help survive junk arguments.
 	for _, arg := range os.Args[1:] {
 		switch arg {
 		case "-V", "-version", "--version", "version":
@@ -199,6 +211,15 @@ func main() {
 	os.Stderr = stderrTarget(cfg.stderrPath)
 	cfg.stderr = os.Stderr
 
+	// Visit sees only the flags the operator gave, so it runs after Parse.
+	named := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { named[f.Name] = true })
+
+	sshPort, err := sshProbePort(cfg.ssh, cfg.sshPort, named["ssh-port"])
+	if err != nil {
+		failUsage(fs, err.Error())
+	}
+
 	switch args := fs.Args(); len(args) {
 	case 2:
 		cfg.remote = args[0]
@@ -218,9 +239,10 @@ func main() {
 	tun := &sclient.Tunnel{
 		InsecureSkipVerify: cfg.insecure,
 		ServerName:         cfg.servername,
-		NextProtos:         parseOptionList(cfg.alpn),
+		NextProtos:         alpnList(cfg.alpn, named["alpn"], sshPort > 0),
 		TCPTimeout:         toSeconds(cfg.tcpTimeout),
 		TLSTimeout:         toSeconds(cfg.tlsTimeout),
+		SSHPort:            sshPort,
 	}
 
 	remoteHost, remotePort, err := remoteAddr(cfg.remote)
@@ -248,19 +270,71 @@ func main() {
 	defer stop()
 
 	if err := cfg.run(ctx, tun); err != nil {
+		// The command is the speaker; everything nested in the error is already
+		// indented under this line.
 		_, _ = fmt.Fprintf(cfg.stderr, "%s: %s\n", name, err)
 		os.Exit(1)
 	}
 }
 
-// run drives one tunnel: stdio for a pipe, a listener for a forwarded port.
-// What it says is the command's business: c.silent decides the progress lines,
-// c.stderr is where they go.
+// sshProbePort resolves --ssh against --ssh-port. Naming the port is the mode; --ssh
+// is the shorthand for 22, and an explicit port always wins. A named zero is a
+// mistake, not "off".
+func sshProbePort(ssh bool, sshPort int, named bool) (int, error) {
+	if sshPort < 0 || sshPort > 65535 {
+		return 0, errors.New("--ssh-port must be 1-65535")
+	}
+	if sshPort > 0 {
+		return sshPort, nil
+	}
+	if named {
+		return 0, errors.New("--ssh-port must be 1-65535 (omit it for a plain TLS tunnel)")
+	}
+	if ssh {
+		return defaultSSHPort, nil
+	}
+	return 0, nil
+}
+
+// alpnList is --alpn as offered. In SSH mode an unset list takes "ssh"; an
+// explicit empty one offers nothing, which turns the ALPN check off. In plain mode
+// an unset list is left unset so the tunnel can sniff the local side.
+func alpnList(raw string, explicit bool, ssh bool) []string {
+	if list := parseOptionList(raw); list != nil {
+		return list
+	}
+	if explicit {
+		return []string{}
+	}
+	if ssh {
+		return []string{"ssh"}
+	}
+	return nil
+}
+
+// sshProgress is whether an SSH-mode session may say which port won. A pipe's
+// stderr is ssh's own terminal, so a piped session speaks only when asked.
+func sshProgress(c MainConfig, tun *sclient.Tunnel) bool {
+	if c.silent {
+		return false
+	}
+	if tun.LocalAddress == "-" || tun.LocalAddress == "|" {
+		return c.verbose
+	}
+	return true
+}
+
+// run drives one tunnel: stdio for a pipe, a listener for a forwarded port. SSH
+// mode replaces the pre-flight probe with the two-port probe and the session with
+// the version exchange. What the command says is the command's business.
 func (c MainConfig) run(ctx context.Context, tun *sclient.Tunnel) error {
 	// stdio is one session, one dial: nothing to bind, nothing to probe.
 	if tun.LocalAddress == "-" || tun.LocalAddress == "|" {
 		local := sclient.StdioConn(tun.LocalAddress)
-		if !c.silent {
+		if tun.SSHPort > 0 {
+			return tun.ServeSSH(ctx, local, c.stderr, sshProgress(c, tun), c.verbose)
+		}
+		if c.verbose && !c.silent {
 			_, _ = fmt.Fprintf(c.stderr, "(connected to %s and reading from %s)\n",
 				tun.Remote(), local.RemoteAddr())
 		}
@@ -268,10 +342,12 @@ func (c MainConfig) run(ctx context.Context, tun *sclient.Tunnel) error {
 	}
 
 	// The probe is the operator's early warning; each local connection dials on
-	// its own.
-	if err := tun.Probe(ctx); err != nil {
-		_, _ = fmt.Fprintf(c.stderr, "[warn] '%s' may not be accepting connections: %s\n",
-			tun.Remote(), err)
+	// its own. SSH mode probes per session instead.
+	if tun.SSHPort == 0 {
+		if err := tun.Probe(ctx); err != nil {
+			_, _ = fmt.Fprintf(c.stderr, "[warn] '%s' may not be accepting connections: %s\n",
+				tun.Remote(), err)
+		}
 	}
 
 	ln, err := tun.Listen()
@@ -304,6 +380,17 @@ func (c MainConfig) run(ctx context.Context, tun *sclient.Tunnel) error {
 
 // serve runs one session. A failed session is reported; the listener keeps going.
 func (c MainConfig) serve(ctx context.Context, tun *sclient.Tunnel, local net.Conn) {
+	if tun.SSHPort > 0 {
+		if err := tun.ServeSSH(ctx, local, c.stderr, sshProgress(c, tun), c.verbose); err != nil {
+			if errors.Is(err, sclient.ErrNoServer) {
+				_, _ = fmt.Fprintf(c.stderr, "%s: %s\n", name, err)
+				return
+			}
+			_, _ = fmt.Fprintf(c.stderr, "[error] %s: %s\n", displayAddr(local.RemoteAddr()), err)
+		}
+		return
+	}
+
 	if !c.silent {
 		_, _ = fmt.Fprintf(c.stderr, "[connect] %s => %s\n", displayAddr(local.RemoteAddr()), tun.Remote())
 	}
